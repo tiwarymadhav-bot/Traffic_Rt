@@ -1,0 +1,31 @@
+# Render blueprint - https://render.com/docs/blueprint-spec
+# In Render: New -> Blueprint -> connect github.com/tiwarymadhav-bot/Traffic_Rt
+services:
+  - type: web
+    name: delhi-bus-traffic
+    runtime: python
+    plan: free
+    region: singapore              # closest Render region to Delhi
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      # Free instances get 512 MB RAM - keep the painted road bounded.
+      - key: MAX_SEGMENTS
+        value: "6000"
+      - key: SEGMENT_TTL
+        value: "10800"             # 3 hours
+      - key: POLL_INTERVAL
+        value: "15"
+      # Keep-alive: Render free sleeps after ~15 min without traffic, which
+      # kills the tracker loop and wipes every trail. The service pings its own
+      # health endpoint. RENDER_EXTERNAL_URL is injected by Render, so leaving
+      # KEEP_ALIVE_URL empty is enough; set it only to ping something else.
+      - key: KEEP_ALIVE_SEC
+        value: "600"
+      - key: KEEP_ALIVE_URL
+        value: ""

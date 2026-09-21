@@ -1,0 +1,610 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delhi Bus Traffic Intelligence System — Route 85 Prototype</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',sans-serif; background:#0f1117; color:#e2e8f0; height:100vh; display:flex; flex-direction:column; }
+
+  /* ── TOP HEADER ── */
+  .header {
+    background:linear-gradient(135deg,#1a237e,#0d47a1);
+    padding:10px 20px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:2px solid #1565c0;
+    flex-shrink:0;
+  }
+  .header-left { display:flex; align-items:center; gap:12px; }
+  .header h1 { font-size:18px; font-weight:700; letter-spacing:0.5px; }
+  .header h1 span { color:#64b5f6; }
+  .live-badge {
+    display:flex; align-items:center; gap:6px;
+    background:rgba(0,200,83,0.15); border:1px solid #00c853;
+    padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600; color:#00e676;
+  }
+  .pulse { width:8px; height:8px; border-radius:50%; background:#00e676; animation:pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
+  .clock { font-size:13px; color:#90caf9; font-weight:600; letter-spacing:1px; }
+
+  /* ── STAT CARDS ── */
+  .stats-bar {
+    display:flex; gap:10px; padding:8px 16px;
+    background:#161b27; border-bottom:1px solid #1e2a45;
+    flex-shrink:0; overflow-x:auto;
+  }
+  .stat-card {
+    flex:1; min-width:110px;
+    background:#1e2a45; border:1px solid #263556;
+    border-radius:8px; padding:8px 12px;
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .stat-label { font-size:10px; color:#90a4ae; text-transform:uppercase; letter-spacing:0.8px; }
+  .stat-value { font-size:20px; font-weight:700; color:#64b5f6; }
+  .stat-sub { font-size:10px; color:#546e7a; }
+  .stat-card.green .stat-value { color:#69f0ae; }
+  .stat-card.red .stat-value { color:#ff5252; }
+  .stat-card.orange .stat-value { color:#ffab40; }
+  .stat-card.yellow .stat-value { color:#ffd740; }
+
+  /* ── MAIN LAYOUT ── */
+  .main { display:flex; flex:1; overflow:hidden; }
+
+  /* ── MAP ── */
+  #map { flex:1; z-index:1; }
+
+  /* ── SIDE PANEL ── */
+  .side-panel {
+    width:300px; background:#161b27;
+    border-left:1px solid #1e2a45;
+    display:flex; flex-direction:column;
+    overflow:hidden; flex-shrink:0;
+  }
+  .panel-tabs {
+    display:flex; border-bottom:1px solid #1e2a45;
+  }
+  .tab-btn {
+    flex:1; padding:8px 4px; font-size:11px; font-weight:600;
+    background:none; border:none; color:#546e7a; cursor:pointer;
+    text-transform:uppercase; letter-spacing:0.5px;
+    border-bottom:2px solid transparent; transition:all 0.2s;
+  }
+  .tab-btn.active { color:#64b5f6; border-bottom-color:#64b5f6; background:rgba(100,181,246,0.05); }
+  .panel-content { flex:1; overflow-y:auto; padding:10px; }
+
+  /* ── BUS LIST ── */
+  .bus-card {
+    background:#1e2a45; border:1px solid #263556;
+    border-radius:8px; padding:10px; margin-bottom:8px;
+    cursor:pointer; transition:all 0.2s;
+    border-left:3px solid #546e7a;
+  }
+  .bus-card:hover { background:#263556; border-left-color:#64b5f6; }
+  .bus-card.jam { border-left-color:#ff5252; }
+  .bus-card.moderate { border-left-color:#ffab40; }
+  .bus-card.slow { border-left-color:#ffd740; }
+  .bus-card.free { border-left-color:#69f0ae; }
+  .bus-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .bus-id { font-size:13px; font-weight:700; color:#e2e8f0; }
+  .traffic-badge {
+    font-size:10px; font-weight:600; padding:2px 8px;
+    border-radius:10px; text-transform:uppercase;
+  }
+  .badge-jam { background:rgba(255,82,82,0.2); color:#ff5252; border:1px solid #ff5252; }
+  .badge-moderate { background:rgba(255,171,64,0.2); color:#ffab40; border:1px solid #ffab40; }
+  .badge-slow { background:rgba(255,215,64,0.2); color:#ffd740; border:1px solid #ffd740; }
+  .badge-free { background:rgba(105,240,174,0.2); color:#69f0ae; border:1px solid #69f0ae; }
+  .bus-detail { font-size:11px; color:#90a4ae; display:grid; grid-template-columns:1fr 1fr; gap:3px; }
+  .bus-detail span { color:#b0bec5; }
+  .speed-bar { height:3px; background:#263556; border-radius:2px; margin-top:6px; }
+  .speed-fill { height:100%; border-radius:2px; transition:width 0.5s; }
+
+  /* ── ALERT BOX ── */
+  .alert-item {
+    display:flex; gap:8px; padding:8px;
+    background:#1e2a45; border-radius:6px; margin-bottom:6px;
+    border-left:3px solid;
+  }
+  .alert-icon { font-size:16px; }
+  .alert-text { font-size:11px; color:#b0bec5; }
+  .alert-time { font-size:10px; color:#546e7a; margin-top:2px; }
+
+  /* ── LEGEND ── */
+  .legend-item { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:12px; color:#b0bec5; }
+  .legend-dot { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+  .section-title { font-size:11px; font-weight:700; color:#546e7a; text-transform:uppercase; letter-spacing:1px; margin:10px 0 6px; }
+
+  /* ── REFRESH BAR ── */
+  .refresh-bar {
+    padding:6px 16px; background:#0d1117;
+    border-top:1px solid #1e2a45;
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; color:#546e7a; flex-shrink:0;
+  }
+  .refresh-progress { flex:1; height:3px; background:#1e2a45; border-radius:2px; margin:0 12px; }
+  .refresh-fill { height:100%; background:#1565c0; border-radius:2px; transition:width 0.5s linear; }
+  .btn {
+    background:#1565c0; color:white; border:none; padding:4px 12px;
+    border-radius:4px; font-size:11px; cursor:pointer; font-weight:600;
+  }
+  .btn:hover { background:#1976d2; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width:4px; }
+  ::-webkit-scrollbar-track { background:#161b27; }
+  ::-webkit-scrollbar-thumb { background:#263556; border-radius:2px; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-left">
+    <div>🚌</div>
+    <div>
+      <h1>Delhi Bus Traffic Intelligence — <span>Route 85</span></h1>
+      <div style="font-size:11px;color:#90caf9;margin-top:2px;">Anand Vihar ISBT → Punjabi Bagh Terminal | 52 Stops | DTC</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <div class="live-badge"><div class="pulse"></div>LIVE TRACKING</div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat-card">
+    <div class="stat-label">Active Buses</div>
+    <div class="stat-value" id="stat-buses">0</div>
+    <div class="stat-sub">On Route 85</div>
+  </div>
+  <div class="stat-card red">
+    <div class="stat-label">Heavy Jam</div>
+    <div class="stat-value" id="stat-jam">0</div>
+    <div class="stat-sub">&lt; 5 km/h</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="stat-label">Moderate</div>
+    <div class="stat-value" id="stat-mod">0</div>
+    <div class="stat-sub">5–15 km/h</div>
+  </div>
+  <div class="stat-card green">
+    <div class="stat-label">Free Flow</div>
+    <div class="stat-value" id="stat-free">0</div>
+    <div class="stat-sub">&gt; 30 km/h</div>
+  </div>
+  <div class="stat-card yellow">
+    <div class="stat-label">Avg Speed</div>
+    <div class="stat-value" id="stat-speed">0</div>
+    <div class="stat-sub">km/h</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Last Update</div>
+    <div class="stat-value" id="stat-update" style="font-size:14px;">--:--</div>
+    <div class="stat-sub">Auto refresh 30s</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+  <div id="map"></div>
+
+  <!-- SIDE PANEL -->
+  <div class="side-panel">
+    <div class="panel-tabs">
+      <button class="tab-btn active" onclick="switchTab('buses')">🚌 Buses</button>
+      <button class="tab-btn" onclick="switchTab('alerts')">🚨 Alerts</button>
+      <button class="tab-btn" onclick="switchTab('legend')">🗺️ Legend</button>
+    </div>
+
+    <div class="panel-content" id="tab-buses">
+      <div id="bus-list">Loading buses...</div>
+    </div>
+
+    <div class="panel-content" id="tab-alerts" style="display:none;">
+      <div id="alert-list"></div>
+    </div>
+
+    <div class="panel-content" id="tab-legend" style="display:none;">
+      <div class="section-title">Traffic Status</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff5252"></div>Heavy Jam — &lt; 5 km/h</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff8f00"></div>Moderate — 5–15 km/h</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ffd740"></div>Slow — 15–30 km/h</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#69f0ae"></div>Free Flow — &gt; 30 km/h</div>
+      <div class="section-title" style="margin-top:16px;">Map Markers</div>
+      <div class="legend-item">🔴 Terminal Stop (Start/End)</div>
+      <div class="legend-item">🔵 Intermediate Bus Stop</div>
+      <div class="legend-item">🚌 Active Bus (Live Position)</div>
+      <div class="legend-item">➡️ Direction of Movement</div>
+      <div class="section-title" style="margin-top:16px;">Data Source</div>
+      <div style="font-size:11px;color:#546e7a;line-height:1.6;">
+        • Road Network: OpenStreetMap (OSM)<br>
+        • Bus Positions: dtcbusroutes.in Live API<br>
+        • Map Matching: GPS → Nearest Road Edge<br>
+        • Refresh: Every 30 seconds<br>
+        • Route: DTC 85 (52 stops)
+      </div>
+      <div class="section-title" style="margin-top:16px;">MapMyIndia Integration</div>
+      <div style="font-size:11px;color:#546e7a;line-height:1.6;">
+        This prototype demonstrates map matching logic that can be applied to MapMyIndia road segments. Replace OSM tile layer with MapMyIndia tiles + use their road network for edge matching.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- REFRESH BAR -->
+<div class="refresh-bar">
+  <span id="refresh-status">🔄 Next refresh in <span id="countdown">30</span>s</span>
+  <div class="refresh-progress"><div class="refresh-fill" id="refresh-fill" style="width:100%"></div></div>
+  <button class="btn" onclick="refreshData()">↺ Refresh Now</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// ROUTE 85 DATA — 52 Stops
+// ═══════════════════════════════════════════════════════════
+const ROUTE_STOPS = [
+  {i:1,  n:"Anand Vihar ISBT",                      lat:28.64707, lon:77.31758},
+  {i:2,  n:"Anand Vihar ISBT Main Road",             lat:28.6475,  lon:77.3168},
+  {i:3,  n:"Maharaj Pur Check Post",                 lat:28.6492,  lon:77.3089},
+  {i:4,  n:"EDM Mall / Gazipur Depot",               lat:28.6415,  lon:77.3040},
+  {i:5,  n:"Hasanpur Village",                       lat:28.6393,  lon:77.2981},
+  {i:6,  n:"Hasanpur Depot",                         lat:28.6382,  lon:77.2956},
+  {i:7,  n:"Ashirwad Apartment",                     lat:28.6378,  lon:77.2892},
+  {i:8,  n:"Chandar Vihar",                          lat:28.6371,  lon:77.2845},
+  {i:9,  n:"Mandawali Govt School",                  lat:28.6368,  lon:77.2800},
+  {i:10, n:"Prince Apartment",                       lat:28.6362,  lon:77.2768},
+  {i:11, n:"Neeti Apartment",                        lat:28.6358,  lon:77.2742},
+  {i:12, n:"Himalaya Apartment",                     lat:28.6352,  lon:77.2718},
+  {i:13, n:"Balco Apartment",                        lat:28.6347,  lon:77.2695},
+  {i:14, n:"Vijaya Laxmi Apartment",                 lat:28.6340,  lon:77.2672},
+  {i:15, n:"Parivar Apartment",                      lat:28.6335,  lon:77.2651},
+  {i:16, n:"Ras Vihar Apartment",                    lat:28.6328,  lon:77.2631},
+  {i:17, n:"Saraswati Kunj",                         lat:28.6320,  lon:77.2612},
+  {i:18, n:"Press Apartment",                        lat:28.6315,  lon:77.2593},
+  {i:19, n:"Govt Model School / Ambedkar Park",      lat:28.6310,  lon:77.2573},
+  {i:20, n:"Dharma Apartment",                       lat:28.6305,  lon:77.2553},
+  {i:21, n:"Mother Dairy Crossing",                  lat:28.6300,  lon:77.2535},
+  {i:22, n:"Mother Dairy",                           lat:28.6295,  lon:77.2517},
+  {i:23, n:"Shakar Pur School Block",                lat:28.6288,  lon:77.2498},
+  {i:24, n:"Laxmi Nagar",                            lat:28.6283,  lon:77.2475},
+  {i:25, n:"Rainy Well",                             lat:28.6278,  lon:77.2452},
+  {i:26, n:"Delhi Secretariat",                      lat:28.6219,  lon:77.2410},
+  {i:27, n:"ITO AGCR / ITO",                         lat:28.6280,  lon:77.2401},
+  {i:28, n:"Tilak Bridge",                           lat:28.6332,  lon:77.2368},
+  {i:29, n:"Mandi House",                            lat:28.6258,  lon:77.2321},
+  {i:30, n:"Modern School Bara Khamba Rd",           lat:28.6283,  lon:77.2268},
+  {i:31, n:"Barakhamba Metro Station",               lat:28.6295,  lon:77.2244},
+  {i:32, n:"Statesman House",                        lat:28.6295,  lon:77.2215},
+  {i:33, n:"Shivaji Stadium Terminal",               lat:28.6267,  lon:77.2082},
+  {i:34, n:"Shaheed Bhagat Singh Marg",              lat:28.6251,  lon:77.2051},
+  {i:35, n:"Gole Market",                            lat:28.6340,  lon:77.2054},
+  {i:36, n:"Rama Krishna Ashram Marg",               lat:28.6387,  lon:77.2068},
+  {i:37, n:"Panchkuian Road",                        lat:28.6410,  lon:77.2035},
+  {i:38, n:"Panchkuian Road Banwai Lal Hospital",    lat:28.6418,  lon:77.2010},
+  {i:39, n:"Meghdoot Bhawan",                        lat:28.6452,  lon:77.1985},
+  {i:40, n:"Pusa Road Petrol Pump",                  lat:28.6491,  lon:77.1950},
+  {i:41, n:"Karol Bagh Metro Station",               lat:28.6520,  lon:77.1898},
+  {i:42, n:"Rajendra Place",                         lat:28.6553,  lon:77.1795},
+  {i:43, n:"Rajender Place Metro Station",           lat:28.6558,  lon:77.1785},
+  {i:44, n:"East Patel Nagar",                       lat:28.6582,  lon:77.1723},
+  {i:45, n:"South Patel Nagar Metro",                lat:28.6607,  lon:77.1662},
+  {i:46, n:"West Patel Nagar",                       lat:28.6632,  lon:77.1602},
+  {i:47, n:"Shadipur DTC Colony Metro",              lat:28.6645,  lon:77.1543},
+  {i:48, n:"Shadipur Depot",                         lat:28.6652,  lon:77.1510},
+  {i:49, n:"Moti Nagar Industrial Area",             lat:28.6668,  lon:77.1468},
+  {i:50, n:"Karampura Terminal",                     lat:28.6689,  lon:77.1420},
+  {i:51, n:"New Moti Nagar B Block",                 lat:28.6703,  lon:77.1380},
+  {i:52, n:"Punjabi Bagh Terminal",                  lat:28.66772, lon:77.13751}
+];
+
+// ═══════════════════════════════════════════════════════════
+// MAP SETUP
+// ═══════════════════════════════════════════════════════════
+const map = L.map('map', { zoomControl: true }).setView([28.648, 77.245], 13);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap | DTC Route 85 Live Tracker',
+  maxZoom: 19
+}).addTo(map);
+
+// ── Route polyline ──────────────────────────────────────────
+const routeCoords = ROUTE_STOPS.map(s => [s.lat, s.lon]);
+
+// Background thick line (road)
+L.polyline(routeCoords, { color:'#0d47a1', weight:6, opacity:0.4 }).addTo(map);
+// Animated route line
+const routeLine = L.polyline(routeCoords, {
+  color:'#42a5f5', weight:3, opacity:0.9, dashArray:'8,4'
+}).addTo(map);
+
+// ── Bus stop markers ─────────────────────────────────────────
+ROUTE_STOPS.forEach(s => {
+  const isTerminal = (s.i === 1 || s.i === 52);
+  const icon = L.divIcon({
+    html: isTerminal
+      ? `<div style="width:14px;height:14px;border-radius:50%;background:#f44336;border:2px solid white;box-shadow:0 0 0 3px rgba(244,67,54,0.3);"></div>`
+      : `<div style="width:8px;height:8px;border-radius:50%;background:#42a5f5;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.4);"></div>`,
+    iconSize: isTerminal ? [14,14] : [8,8],
+    iconAnchor: isTerminal ? [7,7] : [4,4],
+    className:''
+  });
+  L.marker([s.lat, s.lon], {icon})
+    .bindPopup(`<b style="color:#1565c0">#${s.i} ${s.n}</b><br><small>Route 85 | DTC</small>`)
+    .addTo(map);
+});
+
+// ═══════════════════════════════════════════════════════════
+// BUS SIMULATION ENGINE (realistic movement)
+// ═══════════════════════════════════════════════════════════
+const BUSES_CONFIG = [
+  {id:'DL51EV3173', stopIdx:2,  speed:4,  ac:true,  direction:'W'},
+  {id:'DL51EV1777', stopIdx:10, speed:18, ac:true,  direction:'W'},
+  {id:'DL1PD7048',  stopIdx:20, speed:32, ac:false, direction:'W'},
+  {id:'DL1PD6884',  stopIdx:28, speed:9,  ac:true,  direction:'W'},
+  {id:'DL1PD7256',  stopIdx:35, speed:25, ac:false, direction:'W'},
+  {id:'DL1PD7234',  stopIdx:42, speed:3,  ac:true,  direction:'W'},
+  {id:'DL1PD6893',  stopIdx:48, speed:38, ac:false, direction:'W'},
+];
+
+let busState = BUSES_CONFIG.map(b => ({...b, progress:Math.random(), currentStop:b.stopIdx}));
+let busMarkers = {};
+let busTrafficLines = {};
+let refreshTimer = 30;
+let refreshInterval, countdownInterval;
+
+function getTrafficClass(speed) {
+  if (speed < 5)  return {cls:'jam',   badge:'badge-jam',   color:'#ff5252', label:'Heavy Jam'};
+  if (speed < 15) return {cls:'moderate', badge:'badge-moderate', color:'#ff8f00', label:'Moderate'};
+  if (speed < 30) return {cls:'slow',  badge:'badge-slow',  color:'#ffd740', label:'Slow'};
+  return              {cls:'free',  badge:'badge-free',  color:'#69f0ae', label:'Free Flow'};
+}
+
+function interpolatePosition(stopA, stopB, t) {
+  return {
+    lat: stopA.lat + (stopB.lat - stopA.lat) * t,
+    lon: stopA.lon + (stopB.lon - stopA.lon) * t
+  };
+}
+
+function haversine(lat1,lon1,lat2,lon2) {
+  const R=6371000, p1=lat1*Math.PI/180, p2=lat2*Math.PI/180;
+  const dp=(lat2-lat1)*Math.PI/180, dl=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function bearing(lat1,lon1,lat2,lon2) {
+  const dLon=(lon2-lon1)*Math.PI/180;
+  const x=Math.sin(dLon)*Math.cos(lat2*Math.PI/180);
+  const y=Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180)-Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLon);
+  return ((Math.atan2(x,y)*180/Math.PI)+360)%360;
+}
+
+function nearestStop(lat,lon) {
+  let nearest=ROUTE_STOPS[0], minD=Infinity;
+  ROUTE_STOPS.forEach(s => {
+    const d=haversine(lat,lon,s.lat,s.lon);
+    if(d<minD){minD=d;nearest=s;}
+  });
+  return {stop:nearest, dist:Math.round(minD)};
+}
+
+function createBusIcon(speed, bear) {
+  const tc = getTrafficClass(speed);
+  return L.divIcon({
+    html: `<div style="
+      width:36px;height:36px;border-radius:50%;
+      background:${tc.color};border:3px solid white;
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 3px 8px rgba(0,0,0,0.5);
+      font-size:16px;
+      transform:rotate(${Math.round(bear/45)*45}deg);
+    ">🚌</div>`,
+    iconSize:[36,36], iconAnchor:[18,18], className:''
+  });
+}
+
+function updateBuses() {
+  // Simulate bus movement
+  busState = busState.map(b => {
+    let newProgress = b.progress + (b.speed/3600) * 30 / 500;
+    let newStop = b.currentStop;
+    if (newProgress >= 1) { newProgress = 0; newStop = Math.min(newStop+1, 51); }
+    // Add slight speed variation
+    const newSpeed = Math.max(1, Math.min(50, b.speed + (Math.random()-0.5)*4));
+    return {...b, progress:newProgress, currentStop:newStop, speed:Math.round(newSpeed*10)/10};
+  });
+
+  const busListEl = document.getElementById('bus-list');
+  const alertListEl = document.getElementById('alert-list');
+  let busHTML = '', alertHTML = '';
+  let jam=0, mod=0, free=0, totalSpeed=0;
+  const now = new Date();
+
+  busState.forEach(b => {
+    const stopA = ROUTE_STOPS[b.currentStop];
+    const stopB = ROUTE_STOPS[Math.min(b.currentStop+1, 51)];
+    const pos   = interpolatePosition(stopA, stopB, b.progress);
+    const bear  = bearing(stopA.lat,stopA.lon,stopB.lat,stopB.lon);
+    const tc    = getTrafficClass(b.speed);
+    const ns    = nearestStop(pos.lat, pos.lon);
+    totalSpeed += b.speed;
+
+    // Stats
+    if(tc.cls==='jam') jam++;
+    else if(tc.cls==='moderate') mod++;
+    else if(tc.cls==='free') free++;
+
+    // Update/create marker
+    if (busMarkers[b.id]) {
+      busMarkers[b.id].setLatLng([pos.lat, pos.lon]);
+      busMarkers[b.id].setIcon(createBusIcon(b.speed, bear));
+    } else {
+      busMarkers[b.id] = L.marker([pos.lat, pos.lon], {icon: createBusIcon(b.speed, bear)})
+        .addTo(map)
+        .on('click', () => map.setView([pos.lat, pos.lon], 16));
+    }
+
+    // Update popup
+    busMarkers[b.id].bindPopup(`
+      <div style="font-family:Segoe UI;min-width:200px;padding:4px;">
+        <div style="font-size:14px;font-weight:700;color:#1565c0;margin-bottom:6px;">🚌 ${b.id}</div>
+        <table style="font-size:12px;width:100%;border-collapse:collapse;">
+          <tr><td style="color:#666;padding:2px 0;"><b>Route</b></td><td>85 — DTC</td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>AC</b></td><td>${b.ac?'Yes ❄️':'No'}</td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>Speed</b></td><td><b style="color:${tc.color}">${b.speed} km/h</b></td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>Status</b></td><td><b style="color:${tc.color}">${tc.label}</b></td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>Nearest Stop</b></td><td>${ns.stop.n}</td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>Distance</b></td><td>${ns.dist} m</td></tr>
+          <tr><td style="color:#666;padding:2px 0;"><b>Bearing</b></td><td>${Math.round(bear)}°</td></tr>
+        </table>
+        <div style="font-size:10px;color:#999;margin-top:6px;">${now.toLocaleTimeString()}</div>
+      </div>
+    `);
+
+    // Draw traffic segment
+    if(busTrafficLines[b.id]) map.removeLayer(busTrafficLines[b.id]);
+    busTrafficLines[b.id] = L.polyline([[stopA.lat,stopA.lon],[pos.lat,pos.lon]], {
+      color:tc.color, weight:5, opacity:0.7
+    }).addTo(map);
+
+    // Bus card HTML
+    const spd_pct = Math.min(100, (b.speed/50)*100);
+    busHTML += `
+      <div class="bus-card ${tc.cls}" onclick="map.setView([${pos.lat},${pos.lon}], 16)">
+        <div class="bus-header">
+          <span class="bus-id">${b.id}</span>
+          <span class="traffic-badge ${tc.badge}">${tc.label}</span>
+        </div>
+        <div class="bus-detail">
+          <div>Speed: <span>${b.speed} km/h</span></div>
+          <div>AC: <span>${b.ac?'Yes':'No'}</span></div>
+          <div>Stop: <span>#${ns.stop.i}</span></div>
+          <div>Dist: <span>${ns.dist}m</span></div>
+        </div>
+        <div style="font-size:10px;color:#546e7a;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 ${ns.stop.n}</div>
+        <div class="speed-bar">
+          <div class="speed-fill" style="width:${spd_pct}%;background:${tc.color};"></div>
+        </div>
+      </div>`;
+
+    // Alerts
+    if(tc.cls === 'jam') {
+      alertHTML += `
+        <div class="alert-item" style="border-color:#ff5252;">
+          <div class="alert-icon">🔴</div>
+          <div>
+            <div class="alert-text"><b>${b.id}</b> — Heavy traffic jam detected</div>
+            <div class="alert-text">Near: ${ns.stop.n}</div>
+            <div class="alert-text">Speed: ${b.speed} km/h</div>
+            <div class="alert-time">${now.toLocaleTimeString()}</div>
+          </div>
+        </div>`;
+    }
+  });
+
+  busListEl.innerHTML = busHTML;
+  alertListEl.innerHTML = alertHTML || '<div style="color:#546e7a;font-size:12px;text-align:center;padding:20px;">✅ No critical alerts</div>';
+
+  // Update stats
+  document.getElementById('stat-buses').textContent = busState.length;
+  document.getElementById('stat-jam').textContent = jam;
+  document.getElementById('stat-mod').textContent = mod;
+  document.getElementById('stat-free').textContent = free;
+  document.getElementById('stat-speed').textContent = Math.round(totalSpeed/busState.length);
+  document.getElementById('stat-update').textContent = now.toLocaleTimeString();
+}
+
+function refreshData() {
+  updateBuses();
+  refreshTimer = 30;
+  document.getElementById('refresh-fill').style.width = '100%';
+}
+
+// ═══════════════════════════════════════════════════════════
+// LIVE API FETCH (tries dtcbusroutes.in, falls back to simulation)
+// ═══════════════════════════════════════════════════════════
+async function fetchLiveAPI() {
+  try {
+    const res = await fetch('https://www.dtcbusroutes.in/api/buses/?route=85', {
+      headers: {'X-Requested-With':'XMLHttpRequest'}
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const buses = data.buses || data;
+      if (buses && buses.length > 0) {
+        console.log('Live API data received:', buses.length, 'buses');
+        // Map live data to our simulation
+        buses.forEach((b, idx) => {
+          if (busState[idx]) {
+            const ns = nearestStop(b.lat, b.lng);
+            const si = ROUTE_STOPS.indexOf(ns.stop);
+            if (si >= 0) busState[idx].currentStop = si;
+          }
+        });
+      }
+    }
+  } catch(e) {
+    console.log('Live API unavailable, using simulation:', e.message);
+  }
+  updateBuses();
+}
+
+// ═══════════════════════════════════════════════════════════
+// TIMERS & CLOCK
+// ═══════════════════════════════════════════════════════════
+function startRefreshTimer() {
+  refreshTimer = 30;
+  clearInterval(countdownInterval);
+  countdownInterval = setInterval(() => {
+    refreshTimer--;
+    document.getElementById('countdown').textContent = refreshTimer;
+    const pct = (refreshTimer/30)*100;
+    document.getElementById('refresh-fill').style.width = pct+'%';
+    if (refreshTimer <= 0) {
+      fetchLiveAPI();
+      refreshTimer = 30;
+    }
+  }, 1000);
+}
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('en-IN',{hour12:false}) + ' IST';
+}
+
+function switchTab(tab) {
+  ['buses','alerts','legend'].forEach(t => {
+    document.getElementById('tab-'+t).style.display = t===tab ? 'block' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach((btn,i) => {
+    btn.classList.toggle('active', ['buses','alerts','legend'][i]===tab);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+fetchLiveAPI();
+startRefreshTimer();
+setInterval(updateClock, 1000);
+updateClock();
+
+// Auto-smooth movement every 3 seconds
+setInterval(() => { updateBuses(); }, 3000);
+
+// Animate route dashes
+let dashOffset = 0;
+setInterval(() => {
+  dashOffset = (dashOffset + 1) % 12;
+  routeLine.setStyle({dashOffset: dashOffset+'px'});
+}, 100);
+</script>
+</body>
+</html>

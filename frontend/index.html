@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delhi Live Bus Traffic</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --bg:#0f1117; --panel:#151a24; --panel2:#1b2231; --line:#232c3d;
+    --text:#e2e8f0; --muted:#8fa3bf; --accent:#64b5f6;
+    --jam:#ff4d4d; --mod:#ffa502; --free:#2ed573;
+  }
+  /* dark basemap without any API key: invert the tile pane only */
+  .darkmap .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.75)}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);
+       height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  .header{background:linear-gradient(135deg,#16204a,#0d47a1);padding:9px 18px;display:flex;
+          align-items:center;justify-content:space-between;border-bottom:1px solid #1565c0;flex-shrink:0}
+  .header h1{font-size:17px;font-weight:700;letter-spacing:.2px}
+  .header h1 span{color:var(--accent)}
+  .header .sub{font-size:11px;color:#a8c7f0;margin-top:1px}
+  .header-right{display:flex;align-items:center;gap:14px;font-size:12px}
+  .pill{background:rgba(255,255,255,.1);padding:4px 10px;border-radius:99px;white-space:nowrap}
+  .pill b{color:#fff}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--free);display:inline-block;margin-right:6px}
+  .dot.stale{background:var(--mod)}
+  .dot.dead{background:var(--jam)}
+
+  .main{display:flex;flex:1;overflow:hidden;position:relative}
+  #map{flex:1;z-index:1;position:relative;background:#0b0e14}
+
+  .side{width:330px;background:var(--panel);border-left:1px solid var(--line);
+        display:flex;flex-direction:column;overflow-y:auto;padding:14px;flex-shrink:0;
+        transition:width .25s ease,padding .25s ease}
+  .side.collapsed{width:0;padding:0;border:none;overflow:hidden}
+  .side::-webkit-scrollbar{width:8px}
+  .side::-webkit-scrollbar-thumb{background:#2a3446;border-radius:4px}
+
+  .title{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--accent);
+         margin:16px 0 9px;padding-bottom:5px;border-bottom:1px solid var(--line)}
+  .title:first-child{margin-top:0}
+
+  .legend{display:flex;align-items:center;gap:9px;margin-bottom:7px;font-size:12px;color:#c7d3e3}
+  .legend i{width:26px;height:5px;border-radius:3px;flex-shrink:0}
+
+  .tools{display:flex;flex-wrap:wrap;gap:6px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:#bcd0ea;font-size:11px;
+       padding:5px 9px;border-radius:6px;cursor:pointer;transition:.15s}
+  .btn:hover{background:#26324a;color:#fff}
+  .btn.on{background:#1b3a63;border-color:#2f6bb0;color:#fff}
+
+  .routes{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+  .r{display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);
+     border-radius:7px;padding:5px 8px;font-size:12px}
+  .r .no{font-weight:700;color:#cfe2ff;min-width:52px}
+  .r .cnt{margin-left:auto;font-size:10px;color:var(--muted);background:#0f1522;
+          border-radius:99px;padding:2px 7px}
+  .dirbtn{font-size:10px;padding:2px 6px;border-radius:5px;border:1px solid var(--line);
+          background:#121824;color:#68809f;cursor:pointer}
+  .dirbtn.on{background:#1f4e86;border-color:#3a7fc4;color:#fff}
+  .r.off{opacity:.45}
+
+  .stat{display:flex;justify-content:space-between;font-size:12px;color:#b6c6da;margin-bottom:5px}
+  .stat b{color:var(--accent)}
+  .note{font-size:11px;color:#7a8ba3;line-height:1.55}
+
+  #toggleBtn{position:absolute;top:12px;right:12px;z-index:900;background:#16204a;color:#fff;
+             border:1px solid var(--accent);padding:7px 11px;cursor:pointer;border-radius:6px;
+             font-size:12px;font-weight:600;box-shadow:0 2px 12px rgba(0,0,0,.55)}
+  #toggleBtn:hover{background:#22306b}
+  .leaflet-popup-content-wrapper{background:#151a24;color:#e2e8f0;border-radius:8px}
+  .leaflet-popup-tip{background:#151a24}
+  .leaflet-popup-content{font-size:12px;line-height:1.6;margin:10px 12px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Delhi Traffic Flow — <span>Live Bus GPS</span></h1>
+    <div class="sub">DTC live feed · road-snapped breadcrumbs · speed-coloured</div>
+  </div>
+  <div class="header-right">
+    <div class="pill"><span class="dot" id="hbDot"></span><span id="hbText">connecting…</span></div>
+    <div class="pill">Buses <b id="hBuses">0</b></div>
+    <div class="pill">Trails <b id="hSegs">0</b></div>
+  </div>
+</div>
+
+<div class="main">
+  <div id="map"><button id="toggleBtn" onclick="togglePanel()">Hide Panel &raquo;</button></div>
+
+  <div class="side" id="side">
+    <div class="title">Display</div>
+    <div class="tools">
+      <button class="btn on" id="btnMotion" onclick="toggleMotion()">Smooth motion</button>
+      <button class="btn"    id="btnFade"   onclick="toggleFade()">Age fade</button>
+      <button class="btn" id="btnBase" onclick="toggleBase()">Dark map</button>
+        <button class="btn" id="btnOsm" onclick="toggleOsm()">OSM roads</button>
+      
+      <button class="btn"    onclick="fitBuses()">Fit to buses</button>
+      <button class="btn"    onclick="clearTrails()">Clear trails</button>
+    </div>
+
+    <div class="title">Traffic legend</div>
+    <div class="legend"><i style="background:var(--jam)"></i> Heavy jam &lt; 5 km/h</div>
+    <div class="legend"><i style="background:var(--mod)"></i> Moderate 5–15 km/h</div>
+    <div class="legend"><i style="background:var(--free)"></i> Fast &gt; 15 km/h</div>
+    <div class="legend"><i style="width:7px;height:7px;border-radius:50%;background:#fff;border:2px solid #16204a"></i> Live bus</div>
+
+    <div class="title">Routes <span id="routeCount" style="float:right;color:var(--muted)"></span></div>
+    <div class="tools" style="margin-bottom:8px">
+      <button class="btn" onclick="setAllRoutes(true)">All on</button>
+      <button class="btn" onclick="setAllRoutes(false)">All off</button>
+      <button class="btn" onclick="setAllDir('up')">Only UP</button>
+      <button class="btn" onclick="setAllDir('down')">Only DOWN</button>
+    </div>
+    <div class="routes" id="routes"></div>
+
+    <div class="title">Live stats</div>
+    <div class="stat"><span>Active buses</span><b id="sBuses">0</b></div>
+    <div class="stat"><span>Trails on map</span><b id="sSegs">0</b></div>
+    <div class="stat"><span>New this sync</span><b id="sNew">0</b></div>
+    <div class="stat"><span>Feeds OK</span><b id="sFeeds">–</b></div>
+    <div class="stat"><span>Backend cycle</span><b id="sCycle">–</b></div>
+    <div class="stat"><span>Last sync</span><b id="sSync">–</b></div>
+    <p class="note" style="margin-top:12px">
+      Only new trail segments are sent on each sync — the map is never redrawn from scratch,
+      so panning and zooming stay smooth even with thousands of painted segments.
+    </p>
+  </div>
+</div>
+
+<script>
+/* ────────────────────────────  MAP  ──────────────────────────── */
+const map = L.map('map', { preferCanvas:true, zoomControl:true }).setView([28.63,77.225], 12);
+const renderer = L.canvas({ padding:0.4 });
+
+/* Plain OpenStreetMap tiles - no API key, no watermark.
+   "Dark map" just inverts the tile pane via CSS (see .darkmap above). */
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { attribution:'© OpenStreetMap contributors', maxZoom:19, crossOrigin:true }).addTo(map);
+let darkMap = false;
+
+/* ────────────────────────────  STATE  ─────────────────────────── */
+const SYNC_MS      = 5000;     // client poll (server refreshes every ~15s)
+const TRAIL_TTL_MS = 6*60*60*1000;   // painted road stays for 6 h
+const MAX_CLIENT_SEGMENTS = 15000;
+const MOTION_BUS_LIMIT = 900;  // above this, skip per-frame interpolation
+
+let cursor      = 0;
+let segments    = new Map();   // seq -> {layer, key, ts}
+let buses       = new Map();   // bus_id -> {marker, from, to, t0, dur, key}
+let groups      = new Map();   // "route|dir" -> {seg:LayerGroup, bus:LayerGroup, visible}
+let routeMeta   = new Map();   // "route|dir" -> {route, direction, from, to}
+let motion = true, fade = false, lastSync = 0, animHandle = null;
+let osmLayer = null, osmOn = false, resetOpacity = false;
+
+/* ──────────────────────  ROUTE GROUP HELPERS  ─────────────────── */
+function keyOf(route, dir){ return route + '|' + (dir||''); }
+
+function ensureGroup(key){
+  if (groups.has(key)) return groups.get(key);
+  const g = { seg:L.layerGroup(), bus:L.layerGroup(), visible:true };
+  g.seg.addTo(map); g.bus.addTo(map);
+  groups.set(key, g);
+  return g;
+}
+
+function setGroupVisible(key, visible){
+  const g = ensureGroup(key);
+  if (g.visible === visible) return;
+  g.visible = visible;
+  if (visible){ g.seg.addTo(map); g.bus.addTo(map); }
+  else { map.removeLayer(g.seg); map.removeLayer(g.bus); }
+  renderRouteList();
+}
+
+/* ────────────────────────────  SEGMENTS  ──────────────────────── */
+function addSegment(f){
+  const p = f.properties;
+  if (segments.has(p.seq)) return;
+  const latlngs = f.geometry.coordinates.map(c => [c[1], c[0]]);
+  if (latlngs.length < 2) return;
+
+  const key = keyOf(p.route, p.direction);
+  const line = L.polyline(latlngs, {
+    renderer, color:p.color, weight:6, opacity:0.85, lineCap:'round', lineJoin:'round', smoothFactor:1.2
+  });
+  line.bindPopup(
+    `<b>Route ${p.route}</b> <span style="color:#8fa3bf">${(p.direction||'').toUpperCase()}</span><br>` +
+    `Bus: ${p.bus_id}<br>Speed: <b style="color:${p.color}">${p.speed} km/h</b><br>` +
+    `${new Date(p.ts*1000).toLocaleTimeString()}` +
+    (p.snapped === false ? '<br><span style="color:#8fa3bf">direct line (not matched)</span>' : '')
+  );
+  ensureGroup(key).seg.addLayer(line);
+  segments.set(p.seq, { layer:line, key, ts:p.ts*1000 });
+}
+
+function pruneSegments(){
+  const now = Date.now();
+  let overflow = segments.size - MAX_CLIENT_SEGMENTS;
+  for (const [seq, s] of segments){
+    const old = (now - s.ts) > TRAIL_TTL_MS;
+    if (old || overflow > 0){
+      groups.get(s.key)?.seg.removeLayer(s.layer);
+      segments.delete(seq);
+      if (!old) overflow--;
+    } else if (fade){
+      const age = (now - s.ts) / TRAIL_TTL_MS;
+      s.layer.setStyle({ opacity: Math.max(0.2, 0.85 - age*0.6) });
+    } else if (resetOpacity){
+      s.layer.setStyle({ opacity:0.85 });   // only right after fade is switched off
+    }
+  }
+  resetOpacity = false;
+}
+
+function clearTrails(){
+  for (const [, s] of segments) groups.get(s.key)?.seg.removeLayer(s.layer);
+  segments.clear();
+  document.getElementById('sSegs').textContent = '0';
+  document.getElementById('hSegs').textContent = '0';
+}
+
+/* ─────────────────────────────  BUSES  ────────────────────────── */
+function updateBuses(fc){
+  const now = performance.now();
+  const seen = new Set();
+  const animate = motion && fc.features.length <= MOTION_BUS_LIMIT;
+
+  for (const f of fc.features){
+    const p  = f.properties;
+    const ll = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+    const key = keyOf(p.route, p.direction);
+    seen.add(p.bus_id);
+
+    let b = buses.get(p.bus_id);
+    if (!b){
+      const marker = L.circleMarker(ll, {
+        renderer, radius:3, color:'#0b1220', weight:1,
+        fillColor:p.color || '#ffffff', fillOpacity:1
+      });
+      ensureGroup(key).bus.addLayer(marker);
+      b = { marker, from:ll, to:ll, t0:now, dur:SYNC_MS, key };
+      buses.set(p.bus_id, b);
+    } else {
+      if (b.key !== key){                       // route re-assignment
+        groups.get(b.key)?.bus.removeLayer(b.marker);
+        ensureGroup(key).bus.addLayer(b.marker);
+        b.key = key;
+      }
+      const cur = b.marker.getLatLng();
+      b.from = [cur.lat, cur.lng];
+      b.to   = ll;
+      b.t0   = now;
+      b.dur  = SYNC_MS;
+      if (!animate) b.marker.setLatLng(ll);
+      b.marker.setStyle({ fillColor:p.color || '#ffffff' });
+    }
+    b.marker.bindPopup(
+      `<b>Route ${p.route}</b> <span style="color:#8fa3bf">${(p.direction||'').toUpperCase()}</span><br>` +
+      `Bus: ${p.bus_id}<br>` +
+      (p.speed !== null ? `Speed: <b style="color:${p.color}">${p.speed} km/h</b><br>` : '') +
+      `Feed: ${p.raw_route || '–'} · ${p.age}s ago`
+    );
+  }
+
+  for (const [bid, b] of buses){
+    if (!seen.has(bid)){
+      groups.get(b.key)?.bus.removeLayer(b.marker);
+      buses.delete(bid);
+    }
+  }
+}
+
+function animateBuses(){
+  animHandle = requestAnimationFrame(animateBuses);
+  if (!motion || document.hidden || buses.size > MOTION_BUS_LIMIT) return;
+  const now = performance.now();
+  for (const [, b] of buses){
+    const t = Math.min(1, (now - b.t0) / b.dur);
+    if (t >= 1) continue;
+    const lat = b.from[0] + (b.to[0]-b.from[0]) * t;
+    const lng = b.from[1] + (b.to[1]-b.from[1]) * t;
+    b.marker.setLatLng([lat, lng]);
+  }
+}
+animateBuses();
+
+/* ────────────────────────────  SYNC  ──────────────────────────── */
+async function sync(){
+  if (document.hidden) return;
+  try{
+    const res  = await fetch('/api/traffic_segments?after=' + cursor);
+    const data = await res.json();
+    cursor = data.cursor;
+
+    for (const f of data.segments.features) addSegment(f);
+    updateBuses(data.buses);
+    pruneSegments();
+
+    const s = data.stats;
+    document.getElementById('sBuses').textContent = s.active_buses;
+    document.getElementById('hBuses').textContent = s.active_buses;
+    document.getElementById('sSegs').textContent  = segments.size;
+    document.getElementById('hSegs').textContent  = segments.size;
+    document.getElementById('sNew').textContent   = s.new_segments;
+    document.getElementById('sFeeds').textContent =
+      (s.feeds_ok ?? 0) + '/' + ((s.feeds_ok ?? 0) + (s.feeds_failed ?? 0));
+    document.getElementById('sCycle').textContent = (s.last_cycle_seconds ?? '–') + 's';
+    document.getElementById('sSync').textContent  = new Date().toLocaleTimeString();
+    lastSync = Date.now();
+    heartbeat(true);
+  }catch(e){
+    console.error('sync failed', e);
+    heartbeat(false);
+  }
+}
+
+function heartbeat(ok){
+  const dot = document.getElementById('hbDot');
+  const txt = document.getElementById('hbText');
+  if (!ok){ dot.className='dot dead'; txt.textContent='backend unreachable'; return; }
+  const age = (Date.now()-lastSync)/1000;
+  dot.className = age < 30 ? 'dot' : 'dot stale';
+  txt.textContent = 'live';
+}
+
+/* ──────────────────────────  ROUTE LIST  ──────────────────────── */
+async function loadRoutes(){
+  try{
+    const data = await (await fetch('/api/routes')).json();
+    for (const r of data.routes){
+      const k = keyOf(r.route, r.direction);
+      routeMeta.set(k, r);
+      ensureGroup(k);
+    }
+    document.getElementById('routeCount').textContent =
+      new Set(data.routes.map(r=>r.route)).size + ' routes · ' + data.routes.length + ' feeds';
+    renderRouteList();
+  }catch(e){ console.error('routes failed', e); }
+}
+
+function renderRouteList(){
+  const byRoute = new Map();
+  for (const [k, r] of routeMeta){
+    if (!byRoute.has(r.route)) byRoute.set(r.route, {});
+    byRoute.get(r.route)[r.direction] = k;
+  }
+  const liveCount = (k) => {
+    let n = 0;
+    for (const [, b] of buses) if (b.key === k) n++;
+    return n;
+  };
+
+  const html = [];
+  for (const [route, dirs] of byRoute){
+    const keys = Object.values(dirs);
+    const anyOn = keys.some(k => groups.get(k)?.visible);
+    const total = keys.reduce((a,k)=>a+liveCount(k),0);
+    html.push(`<div class="r ${anyOn?'':'off'}">
+      <span class="no">${route}</span>
+      ${['up','down'].filter(d=>dirs[d]).map(d=>{
+        const k = dirs[d];
+        const on = groups.get(k)?.visible;
+        const m  = routeMeta.get(k);
+        return `<button class="dirbtn ${on?'on':''}" title="${(m.from||'')} → ${(m.to||'')}"
+                 onclick="toggleKey('${k.replace(/'/g,"\\'")}')">${d==='up'?'UP':'DN'}</button>`;
+      }).join('')}
+      <span class="cnt">${total} bus</span>
+    </div>`);
+  }
+  document.getElementById('routes').innerHTML = html.join('');
+}
+
+function toggleKey(k){ setGroupVisible(k, !(groups.get(k)?.visible)); }
+function setAllRoutes(on){ for (const k of routeMeta.keys()) setGroupVisible(k, on); }
+function setAllDir(dir){
+  for (const [k, r] of routeMeta) setGroupVisible(k, r.direction === dir);
+}
+
+/* ────────────────────────────  UI  ────────────────────────────── */
+function togglePanel(){
+  const side = document.getElementById('side'), btn = document.getElementById('toggleBtn');
+  side.classList.toggle('collapsed');
+  btn.innerHTML = side.classList.contains('collapsed') ? '&laquo; Show Panel' : 'Hide Panel &raquo;';
+  setTimeout(()=>map.invalidateSize(), 300);
+}
+function toggleMotion(){
+  motion = !motion;
+  document.getElementById('btnMotion').classList.toggle('on', motion);
+  if (!motion) for (const [,b] of buses) b.marker.setLatLng(b.to);
+}
+function toggleFade(){
+  fade = !fade;
+  if (!fade) resetOpacity = true;      // old paint goes back to full strength
+  document.getElementById('btnFade').classList.toggle('on', fade);
+  pruneSegments();
+}
+function toggleBase(){
+  darkMap = !darkMap;
+  document.getElementById('map').classList.toggle('darkmap', darkMap);
+  const b = document.getElementById('btnBase');
+  b.classList.toggle('on', darkMap);
+  b.textContent = darkMap ? 'Light map' : 'Dark map';
+}
+
+async function toggleOsm(){
+  const btn = document.getElementById('btnOsm');
+  if (osmOn){
+    map.removeLayer(osmLayer); osmOn = false; btn.classList.remove('on'); return;
+  }
+  if (!osmLayer){
+    btn.textContent = 'loading…';
+    try{
+      const res = await fetch('/api/osm_roads?layer=major');
+      if (!res.ok){
+        btn.textContent = 'OSM roads';
+        alert('Delhi OSM roads not downloaded yet.\nRun:  python tools/download_delhi_osm.py');
+        return;
+      }
+      const gj = await res.json();
+      osmLayer = L.geoJSON(gj, { renderer,
+        style:{ color:'#3d6ea8', weight:1.2, opacity:0.55 } });
+    }catch(e){ btn.textContent = 'OSM roads'; console.error(e); return; }
+    btn.textContent = 'OSM roads';
+  }
+  osmLayer.addTo(map);
+  if (osmLayer.bringToBack) osmLayer.bringToBack();
+  osmOn = true; btn.classList.add('on');
+}
+function fitBuses(){
+  const pts = [];
+  for (const [,b] of buses) if (groups.get(b.key)?.visible) pts.push(b.marker.getLatLng());
+  if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.08));
+}
+
+document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) sync(); });
+
+/* ──────────────────────────  BOOT  ────────────────────────────── */
+loadRoutes();
+sync();
+setInterval(sync, SYNC_MS);
+setInterval(()=>{ pruneSegments(); renderRouteList(); heartbeat(lastSync>0); }, 20000);
+setInterval(loadRoutes, 300000);
+</script>
+</body>
+</html>

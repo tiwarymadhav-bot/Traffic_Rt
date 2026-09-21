@@ -1,0 +1,26 @@
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- local data / caches (regenerate with tools/download_delhi_osm.py) ---
+cache/
+data/*.geojson
+data/*.gpkg
+data/*.graphml
+data/*.json
+backend/db/*.db
+
+# --- local backups ---
+backup_*/
+*.bak
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

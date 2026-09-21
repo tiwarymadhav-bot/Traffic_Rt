@@ -1,0 +1,76 @@
+{
+  "_comment": "Delhi live bus traffic - tracked routes. 'uid' is the internal DTC live-API route_id. Add new routes with tools/discover_routes.py",
+  "poll_interval_sec": 15,
+  "routes": [
+    { "route": "73",      "direction": "up",   "uid": "2206", "from": "Anand Vihar ISBT",          "to": "Tilak Nagar Terminal" },
+    { "route": "73",      "direction": "down", "uid": "2205", "from": "Tilak Nagar Jail Road",     "to": "ISBT Anand Vihar" },
+
+    { "route": "85",      "direction": "up",   "uid": "2343", "from": "Anand Vihar ISBT",          "to": "Punjabi Bagh Terminal" },
+    { "route": "85",      "direction": "down", "uid": "2340", "from": "Punjabi Bagh Terminal",     "to": "ISBT Anand Vihar" },
+
+    { "route": "233",     "direction": "up",   "uid": "1737", "from": "Sayed Gaon Nangloi",        "to": "Old Delhi Railway Station" },
+    { "route": "233",     "direction": "down", "uid": "1740", "from": "Old Delhi Railway Station", "to": "Sayed Gaon Nangloi" },
+
+    { "route": "306",     "direction": "up",   "uid": "1792", "from": "Nehru Place Terminal",      "to": "Kalyanpuri" },
+    { "route": "306",     "direction": "down", "uid": "1791", "from": "Kalyan Puri Terminal",      "to": "Nehru Place" },
+
+    { "route": "307",     "direction": "up",   "uid": "1796", "from": "Ajmeri Gate",               "to": "Trilokpuri 27" },
+    { "route": "307",     "direction": "down", "uid": "1795", "from": "Trilokpuri 27",             "to": "Ajmeri Gate" },
+
+    { "route": "307A",    "direction": "up",   "uid": "1794", "from": "Ajmeri Gate",               "to": "Trilokpuri (307A)" },
+    { "route": "307A",    "direction": "down", "uid": "1793", "from": "Trilokpuri",                "to": "Ajmeri Gate (307A)" },
+
+    { "route": "307A STL","direction": "up",   "uid": "3424", "from": "STL variant",               "to": "STL variant" },
+    { "route": "307A STL","direction": "down", "uid": "3426", "from": "STL variant",               "to": "STL variant" },
+
+    { "route": "307B STL","direction": "down", "uid": "3425", "from": "STL variant",               "to": "STL variant" },
+
+    { "route": "309",     "direction": "up",   "uid": "1798", "from": "Anand Parvat Terminal",     "to": "Kalyanpuri" },
+    { "route": "309",     "direction": "down", "uid": "1797", "from": "Kalyan Puri Terminal",      "to": "Anand Parvat Terminal" },
+
+    { "route": "391",     "direction": "up",   "uid": "1878", "from": "Kendriya Terminal",         "to": "Kalyan Puri" },
+    { "route": "391",     "direction": "down", "uid": "1877", "from": "Kalyan Puri Terminal",      "to": "Kendriya Terminal" },
+
+    { "route": "429",     "direction": "up",   "uid": "1928", "from": "ISBT Kashmere Gate",        "to": "Alaknanda Apartments" },
+    { "route": "429",     "direction": "down", "uid": "1927", "from": "Alaknanda Apartments",      "to": "Kashmere Gate City Bus" },
+
+    { "route": "463",     "direction": "up",   "uid": "1968", "from": "Okhla Extension",           "to": "Mehrauli Terminal" },
+    { "route": "463",     "direction": "down", "uid": "1967", "from": "Mehrauli Terminal",         "to": "Okhla Extension" },
+
+    { "route": "469",     "direction": "up",   "uid": "1974", "from": "ISBT Anand Vihar Terminal", "to": "Lado Sarai Firni Road" },
+    { "route": "469",     "direction": "down", "uid": "1973", "from": "Lado Sarai Firni Road",     "to": "ISBT Anand Vihar" },
+
+    { "route": "473",     "direction": "up",   "uid": "1978", "from": "Anand Vihar ISBT",          "to": "Badarpur Border" },
+    { "route": "473",     "direction": "down", "uid": "1977", "from": "Badarpur Border",           "to": "ISBT Anand Vihar" },
+
+    { "route": "534",     "direction": "up",   "uid": "2050", "from": "ISBT Anand Vihar Terminal", "to": "Mehrauli Terminal" },
+    { "route": "534",     "direction": "down", "uid": "2048", "from": "Mehrauli Terminal",         "to": "ISBT Anand Vihar" },
+
+    { "route": "534A",    "direction": "up",   "uid": "2045", "from": "ISBT Anand Vihar Terminal", "to": "IGI Airport Terminal 2" },
+    { "route": "534A",    "direction": "down", "uid": "2044", "from": "IGI Airport Terminal 2",    "to": "Anand Vihar ISBT" },
+
+    { "route": "543",     "direction": "up",   "uid": "2070", "from": "ISBT Anand Vihar",          "to": "Safdarjung Terminal" },
+    { "route": "543",     "direction": "down", "uid": "2067", "from": "Safdarjung Terminal",       "to": "ISBT Anand Vihar Terminal" },
+
+    { "route": "543A",    "direction": "up",   "uid": "2066", "from": "ISBT Anand Vihar",          "to": "Kapashera Border" },
+    { "route": "543A",    "direction": "down", "uid": "2065", "from": "Kapashera Border",          "to": "ISBT Anand Vihar" },
+
+    { "route": "623",     "direction": "up",   "uid": "2141", "from": "Shahdara Terminal",         "to": "Nangal Dewat" },
+    { "route": "623",     "direction": "down", "uid": "2140", "from": "Nangal Dewat",              "to": "Shahdara Terminal" },
+
+    { "route": "OMS",     "direction": "up",   "uid": "2716", "from": "ISBT Anand Vihar",          "to": "ISBT Anand Vihar (+)" },
+    { "route": "OMS",     "direction": "down", "uid": "2717", "from": "ISBT Anand Vihar",          "to": "Anand Vihar ISBT (-)" },
+
+    { "route": "0OMS",    "direction": "up",   "uid": "1499", "from": "Uttam Nagar",               "to": "ISBT Anand Vihar (+NS)" },
+    { "route": "0OMS",    "direction": "down", "uid": "1500", "from": "ISBT Anand Vihar Terminal", "to": "Uttam Nagar Terminal (-NS)" },
+
+    { "route": "OMS STL", "direction": "up",   "uid": "1427", "from": "Burari Crossing",           "to": "Burari EV Depot" },
+    { "route": "OMS STL", "direction": "down", "uid": "1428", "from": "Burari EV Depot",           "to": "Burari Crossing" },
+
+    { "route": "D-4501",  "direction": "up",   "uid": "2880", "from": "Patparganj Industrial",     "to": "Priyadarshani Vihar" },
+    { "route": "D-4501",  "direction": "down", "uid": "2881", "from": "Priyadarshani Vihar",       "to": "Patparganj Industrial" },
+
+    { "route": "D-5401",  "direction": "up",   "uid": "2884", "from": "Akshardham Metro Station",  "to": "Anand Vihar ISBT" },
+    { "route": "D-5401",  "direction": "down", "uid": "2885", "from": "ISBT Anand Vihar",          "to": "Akshardham Metro Station" }
+  ]
+}
