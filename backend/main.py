@@ -253,12 +253,20 @@ async def reset_dtc_session() -> None:
         if now - _last_session_reset < 10:
             return
         _last_session_reset = now
-        if _dtc_session is not None and not _dtc_session.closed:
+        old, _dtc_session = _dtc_session, None
+
+    # Closing the old session straight away kills the requests still in flight
+    # on it ("Connector is closed"), which matters on a shared cloud IP where
+    # rate-limit responses arrive in bursts. Let them finish, then close.
+    if old is not None and not old.closed:
+        async def _close_later(session: aiohttp.ClientSession) -> None:
             try:
-                await _dtc_session.close()
+                await asyncio.sleep(20)
+                await session.close()
             except Exception:
                 pass
-        _dtc_session = None
+
+        asyncio.create_task(_close_later(old))
     print("[session] rotated after auth/rate-limit response")
 
 
