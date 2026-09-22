@@ -857,6 +857,84 @@ async def osm_roads(layer: str = Query("major", pattern="^(major|all)$")):
     return FileResponse(path, media_type="application/geo+json")
 
 
+@app.get("/api/debug/segments")
+async def debug_segments(
+    s: float = Query(...), w: float = Query(...),
+    n: float = Query(...), e: float = Query(...),
+    limit: int = Query(60, ge=1, le=300),
+):
+    """
+    Diagnostics: which segments were painted inside a bounding box, and how.
+
+    Open in a browser, e.g.
+      /api/debug/segments?s=28.552&w=77.274&n=28.565&e=77.287
+
+    `snapped` false means the straight chord was painted because matching
+    failed or tripped a guard. `bow` is how far the painted path strays from
+    its own straight chord, `ratio` its length against that chord - together
+    they say whether a trail took a detour or followed the road.
+    """
+    rows = []
+    for seg in reversed(active_segments):
+        path = seg["path"]
+        if not any(s < p[1] < n and w < p[0] < e for p in path):
+            continue
+        a = (path[0][1], path[0][0])
+        b = (path[-1][1], path[-1][0])
+        chord_m = haversine_km(a[1], a[0], b[1], b[0]) * 1000.0
+        length_m = sum(
+            haversine_km(p[0], p[1], q[0], q[1]) * 1000.0
+            for p, q in zip(path, path[1:])
+        )
+        rows.append(
+            {
+                "seq": seg["seq"],
+                "route": seg["route"],
+                "dir": seg["direction"],
+                "bus": seg["bus_id"],
+                "speed": seg["speed"],
+                "snapped": seg.get("snapped", True),
+                "pts": len(path),
+                "chord_m": round(chord_m),
+                "len_m": round(length_m),
+                "ratio": round(length_m / chord_m, 2) if chord_m > 1 else None,
+                "bow_m": round(max_cross_track_m(path, a, b)),
+                "age_s": round(time.time() - seg["ts"]),
+                "start": [round(path[0][1], 5), round(path[0][0], 5)],
+                "end": [round(path[-1][1], 5), round(path[-1][0], 5)],
+            }
+        )
+        if len(rows) >= limit:
+            break
+
+    buses = {}
+    for r in rows:
+        buses.setdefault(r["bus"], 0)
+        buses[r["bus"]] += 1
+
+    live = []
+    for bid, st in last_positions.items():
+        if bid in buses and st.get("recent"):
+            live.append(
+                {
+                    "bus": bid,
+                    "route": st.get("route"),
+                    "dir": st.get("direction"),
+                    "speed": round(st["speed"], 1) if st.get("speed") is not None else None,
+                    "bearing": st.get("bearing"),
+                    "recent_fixes": [[round(f[0], 5), round(f[1], 5)] for f in st["recent"]],
+                }
+            )
+
+    return {
+        "bbox": {"s": s, "w": w, "n": n, "e": e},
+        "matched": len(rows),
+        "by_bus": buses,
+        "segments": rows,
+        "raw_fixes_of_those_buses": live,
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {
