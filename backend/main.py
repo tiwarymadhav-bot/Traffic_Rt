@@ -121,6 +121,24 @@ CORRIDOR_CELL_DEG = CORRIDOR_CELL_M / 111320.0            # 3x3 cells => ~1-2x t
 CORRIDOR_STEP_M = 20.0        # densify the corridor so its cells are contiguous
 CORRIDOR_MIN_INSIDE = _env_float("CORRIDOR_MIN_INSIDE", 0.8)
 
+# ---- post-paint audit ------------------------------------------------------
+# A hop is judged at paint time with only the fixes that existed then. The fixes
+# that arrive afterwards say where the bus actually went, and OSRM matches far
+# better with a wider window. So suspicious segments are re-examined a minute
+# later and either repaired with a better geometry or removed.
+AUDIT_ENABLED = _env_int("AUDIT_ENABLED", 1)
+AUDIT_INTERVAL = _env_int("AUDIT_INTERVAL", 60)   # seconds between audit passes
+AUDIT_MIN_AGE = 45          # let later fixes accumulate first
+AUDIT_MAX_AGE = 900         # older than this, the track is gone anyway
+AUDIT_BATCH = _env_int("AUDIT_BATCH", 40)         # re-match jobs per pass (OSRM cost)
+AUDIT_SCAN = _env_int("AUDIT_SCAN", 600)          # corridor re-checks per pass (free)
+AUDIT_BOW_M = 40.0          # above this a segment is worth re-checking
+AUDIT_RATIO = 1.2
+AUDIT_BEFORE = 4            # fixes of context before the hop
+AUDIT_AFTER = 5             # ...and after it
+TRACK_FIXES = 15            # per-bus history kept for the audit
+TRACK_SEC = 600
+
 # --------------------------------------------------------------------------
 # Route configuration
 # --------------------------------------------------------------------------
@@ -279,6 +297,11 @@ _cycle_stats = {
     "dropped_off_corridor": 0,
     "dropped_long_chord": 0,
 }
+
+# segments removed by the audit; clients learn about them through `removed`
+REMOVALS: List[dict] = []
+AUDIT_STATS = {"last_run": 0.0, "checked": 0, "repaired": 0, "removed": 0,
+               "total_repaired": 0, "total_removed": 0}
 
 # why the last few hops were dropped, for /api/debug/drops
 DROP_SAMPLES: List[dict] = []
@@ -624,6 +647,228 @@ async def match_to_road(
     return _give_up()
 
 
+async def match_window(
+    session: aiohttp.ClientSession,
+    sem: asyncio.Semaphore,
+    fixes: List[Tuple[float, float, float]],
+    i: int,
+    j: int,
+    ckey: str = "",
+) -> List[List[float]]:
+    """
+    Map-match a whole window of fixes and return only the piece between
+    fixes[i] and fixes[j].
+
+    This is the audit's tool: the live matcher sees a bus's last 5 fixes, this
+    one can see several fixes on BOTH sides of the hop, which is exactly the
+    context an HMM matcher needs to pick the right carriageway.
+    """
+    if not (0 <= i < j < len(fixes)):
+        return []
+    lat1, lon1, _ = fixes[i]
+    lat2, lon2, _ = fixes[j]
+    a, b = (lat1, lon1), (lat2, lon2)
+    chord_m = haversine_km(lon1, lat1, lon2, lat2) * 1000.0
+
+    coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon, _ in fixes)
+    radiuses = ";".join([str(MATCH_RADIUS_M)] * len(fixes))
+    stamps = ";".join(str(int(ts)) for _, _, ts in fixes)
+    url = (
+        f"{OSRM_MATCH_URL}{coords}"
+        f"?geometries=geojson&overview=full&steps=true&annotations=false"
+        f"&gaps=ignore&radiuses={radiuses}&timestamps={stamps}"
+    )
+
+    async with sem:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+                if data.get("code") != "Ok":
+                    return []
+                tps = data.get("tracepoints") or []
+                matchings = data.get("matchings") or []
+                if len(tps) <= j or tps[i] is None or tps[j] is None:
+                    return []
+                ti, tj = tps[i], tps[j]
+                mi = ti.get("matchings_index")
+                if mi is None or mi != tj.get("matchings_index") or mi >= len(matchings):
+                    return []
+                wi, wj = ti.get("waypoint_index"), tj.get("waypoint_index")
+                if wi is None or wj is None or wj <= wi:
+                    return []
+                matching = matchings[mi]
+
+                path: List[List[float]] = []
+                leg_m = 0.0
+                legs = matching.get("legs") or []
+                for k in range(wi, wj):
+                    piece = _leg_geometry(matching, k)
+                    if k < len(legs):
+                        leg_m += legs[k].get("distance", 0.0)
+                    if path and piece and path[-1] == piece[0]:
+                        path.extend(piece[1:])
+                    else:
+                        path.extend(piece)
+
+                if _path_ok(path, chord_m, leg_m, a, b, ckey):
+                    return path
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+    return []
+
+
+# --------------------------------------------------------------------------
+# Post-paint audit
+# --------------------------------------------------------------------------
+def _segment_shape(seg: dict) -> Tuple[float, float]:
+    """(ratio, bow) of an already painted segment."""
+    path = seg["path"]
+    a = (path[0][1], path[0][0])
+    b = (path[-1][1], path[-1][0])
+    chord_m = haversine_km(a[1], a[0], b[1], b[0]) * 1000.0
+    length_m = sum(
+        haversine_km(p[0], p[1], q[0], q[1]) * 1000.0 for p, q in zip(path, path[1:])
+    )
+    ratio = (length_m / chord_m) if chord_m > 1 else 1.0
+    return ratio, max_cross_track_m(path, a, b)
+
+
+def _is_suspicious(seg: dict) -> bool:
+    if not seg.get("snapped", True) or seg.get("flagged"):
+        return True
+    ratio, bow = _segment_shape(seg)
+    return bow > AUDIT_BOW_M or ratio > AUDIT_RATIO
+
+
+def _remove_segment(seg: dict) -> None:
+    """Drop a segment and tell clients about it on their next sync."""
+    try:
+        active_segments.remove(seg)
+    except ValueError:
+        return
+    REMOVALS.append({"rev": _next_seq(), "seq": seg["seq"], "ts": time.time()})
+    AUDIT_STATS["removed"] += 1
+    AUDIT_STATS["total_removed"] += 1
+
+
+def _audit_window(track: List[Tuple[float, float, float]], seg: dict):
+    """Locate the segment's hop inside the bus's track and build a wider window."""
+    ts_from, ts_to = seg.get("ts_from"), seg.get("ts_to")
+    if ts_from is None or ts_to is None:
+        return None
+    idx_from = idx_to = None
+    for n, (_, _, ts) in enumerate(track):
+        if abs(ts - ts_from) < 0.6:
+            idx_from = n
+        if abs(ts - ts_to) < 0.6:
+            idx_to = n
+    if idx_from is None or idx_to is None or idx_to <= idx_from:
+        return None
+    lo = max(0, idx_from - AUDIT_BEFORE)
+    hi = min(len(track), idx_to + AUDIT_AFTER + 1)
+    return track[lo:hi], idx_from - lo, idx_to - lo
+
+
+async def audit_cycle(session: aiohttp.ClientSession, sem: asyncio.Semaphore) -> None:
+    """
+    Two passes over recently painted segments:
+
+    * corridor re-check on EVERY segment - cheap, local, and the one that
+      catches a trail painted against the wrong direction's corridor. Such a
+      segment looks geometrically perfect, so a "suspicious" filter would never
+      surface it.
+    * re-match only the suspicious ones - that costs an OSRM call each.
+    """
+    now = time.time()
+    AUDIT_STATS.update(last_run=now, checked=0, repaired=0, removed=0)
+
+    due = [
+        s for s in active_segments
+        if not s.get("audited") and AUDIT_MIN_AGE <= (now - s["ts"]) <= AUDIT_MAX_AGE
+    ][:AUDIT_SCAN]
+    if not due:
+        return
+
+    jobs = []
+    for seg in due:
+        seg["audited"] = True
+        AUDIT_STATS["checked"] += 1
+        state = last_positions.get(seg["bus_id"])
+
+        # Judge it by what the bus turned out to be, not by what the feed said
+        # at the time - the direction label may have settled since.
+        ckey = f"{seg['route']}|{seg['direction']}"
+        if state:
+            ckey = f"{state.get('route')}|{state.get('direction')}"
+
+        if not corridor_ok(ckey, seg["path"]):
+            _remove_segment(seg)
+            continue
+
+        if not _is_suspicious(seg) or len(jobs) >= AUDIT_BATCH:
+            continue
+
+        win = _audit_window((state or {}).get("track") or [], seg)
+        if not win or len(win[0]) < 3:
+            continue
+        fixes, i, j = win
+        jobs.append((seg, ckey, fixes, i, j))
+
+    if not jobs:
+        return
+
+    results = await asyncio.gather(
+        *(match_window(session, sem, f, i, j, ck) for _, ck, f, i, j in jobs)
+    )
+
+    for (seg, _ck, _f, _i, _j), path in zip(jobs, results):
+        if not path or len(path) < 2:
+            # The wider window could not confirm it. A clean match stands; a
+            # straight-line fallback does not.
+            if not seg.get("snapped", True):
+                _remove_segment(seg)
+            continue
+        candidate = dict(seg, path=decimate(path))
+        _, new_bow = _segment_shape(candidate)
+        _, old_bow = _segment_shape(seg)
+        if not seg.get("snapped", True) or new_bow < old_bow - 5:
+            old_seq = seg["seq"]
+            seg["path"] = candidate["path"]
+            seg["snapped"] = True
+            seg["revised"] = True
+            seg["seq"] = _next_seq()      # clients pick the repaired one up as new
+            REMOVALS.append({"rev": _next_seq(), "seq": old_seq, "ts": now})
+            AUDIT_STATS["repaired"] += 1
+            AUDIT_STATS["total_repaired"] += 1
+
+
+async def audit_loop() -> None:
+    if not AUDIT_ENABLED:
+        print("[audit] disabled")
+        return
+    sem = asyncio.Semaphore(max(2, OSRM_CONCURRENCY // 2))
+    async with aiohttp.ClientSession() as session:
+        while True:
+            await asyncio.sleep(AUDIT_INTERVAL)
+            try:
+                await audit_cycle(session, sem)
+                if AUDIT_STATS["checked"]:
+                    print(
+                        f"[audit] checked {AUDIT_STATS['checked']} "
+                        f"| repaired {AUDIT_STATS['repaired']} "
+                        f"| removed {AUDIT_STATS['removed']}",
+                        flush=True,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[audit] error: {type(exc).__name__}: {exc}")
+
+
 # --------------------------------------------------------------------------
 # Tracker loop
 # --------------------------------------------------------------------------
@@ -634,7 +879,8 @@ def _next_seq() -> int:
 
 
 def _prune_segments(now: float) -> None:
-    global active_segments
+    global active_segments, REMOVALS
+    REMOVALS = [r for r in REMOVALS if now - r["ts"] < 3600]
     cutoff = now - SEGMENT_TTL
     kept = [s for s in active_segments if s["ts"] >= cutoff]
     if len(kept) > MAX_SEGMENTS:
@@ -702,6 +948,7 @@ async def run_cycle(
                     bearing=None,
                     history=[(lat, lng, now)],
                     recent=[(lat, lng, now)],
+                    track=[(lat, lng, now)],
                 )
                 continue
             if state is None:
@@ -711,6 +958,7 @@ async def run_cycle(
                     "seen": now, "bearing": None, "speed": None,
                     "history": [(lat, lng, now)],
                     "recent": [(lat, lng, now)],
+                    "track": [(lat, lng, now)],
                     "route": meta.get("route", bus.get("route", "?")),
                     "direction": meta.get("direction", ""),
                     "raw_route": bus.get("route", ""),
@@ -729,6 +977,11 @@ async def run_cycle(
             recent = [f for f in (state.get("recent") or []) if now - f[2] <= RECENT_SEC]
             recent.append((lat, lng, now))
             state["recent"] = recent[-RECENT_FIXES:]
+
+            # longer history, used by the audit to re-match with wider context
+            track = [f for f in (state.get("track") or []) if now - f[2] <= TRACK_SEC]
+            track.append((lat, lng, now))
+            state["track"] = track[-TRACK_FIXES:]
 
             dist_km = haversine_km(state["anchor_lng"], state["anchor_lat"], lng, lat)
             dist_m = dist_km * 1000.0
@@ -763,7 +1016,8 @@ async def run_cycle(
             if dist_km > MAX_JUMP_KM or dt <= 0:
                 # real teleport: start a fresh track, do not paint across Delhi
                 state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
-                             history=[(lat, lng, now)], recent=[(lat, lng, now)])
+                             history=[(lat, lng, now)], recent=[(lat, lng, now)],
+                             track=[(lat, lng, now)])
                 continue
 
             # A fix that implies a silly speed is usually a delayed update, not a
@@ -787,7 +1041,8 @@ async def run_cycle(
             state["history"] = hist
 
             pending.append({"bid": bid, "state": state, "speed": speed, "history": hist,
-                            "ckey": f"{state.get('route')}|{state.get('direction')}"})
+                            "ckey": f"{state.get('route')}|{state.get('direction')}",
+                            "hop": (hist[-2], hist[-1])})
             # anchor moves forward whether or not OSRM answers
             state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
 
@@ -817,6 +1072,9 @@ async def run_cycle(
                 "speed": round(p["speed"], 1),
                 "snapped": was_snapped,
                 "ts": now,
+                "ts_from": p["hop"][0][2],
+                "ts_to": p["hop"][1][2],
+                "audited": False,
             }
         )
         added += 1
@@ -900,7 +1158,11 @@ async def lifespan(_app: FastAPI):
           f"({len({r['route'] for r in ROUTE_CONFIG})} routes x up/down)")
     print(f" Poll interval {POLL_INTERVAL}s | DTC x{DTC_CONCURRENCY} | OSRM x{OSRM_CONCURRENCY}")
     print("=" * 62)
-    tasks = [asyncio.create_task(tracker_loop()), asyncio.create_task(keep_alive_loop())]
+    tasks = [
+        asyncio.create_task(tracker_loop()),
+        asyncio.create_task(keep_alive_loop()),
+        asyncio.create_task(audit_loop()),
+    ]
     try:
         yield
     finally:
@@ -942,6 +1204,7 @@ async def get_traffic_segments(after: int = Query(0, ge=0)):
     """
     now = time.time()
     segs = [s for s in active_segments if s["seq"] > after]
+    removed = [r["seq"] for r in REMOVALS if r["rev"] > after]
 
     features = [
         {
@@ -954,6 +1217,7 @@ async def get_traffic_segments(after: int = Query(0, ge=0)):
                 "route": s["route"],
                 "direction": s["direction"],
                 "snapped": s.get("snapped", True),
+                "revised": bool(s.get("revised")),
                 "ts": round(s["ts"], 1),
             },
             "geometry": {"type": "LineString", "coordinates": s["path"]},
@@ -987,10 +1251,13 @@ async def get_traffic_segments(after: int = Query(0, ge=0)):
         "cursor": _seq_counter,
         "server_time": round(now, 1),
         "segments": {"type": "FeatureCollection", "features": features},
+        "removed": removed,
         "buses": {"type": "FeatureCollection", "features": buses},
         "stats": {
             "active_buses": len(buses),
             "new_segments": len(features),
+            "removed_segments": len(removed),
+            "audit": AUDIT_STATS,
             "total_segments": len(active_segments),
             "poll_interval": POLL_INTERVAL,
             **_cycle_stats,
@@ -1173,6 +1440,7 @@ async def health():
         "ok": True,
         "feeds": len(ROUTE_CONFIG),
         "corridors": len(CORRIDOR_CELLS),
+        "audit": AUDIT_STATS,
         "buses": len(last_positions),
         "segments": len(active_segments),
         **_cycle_stats,
