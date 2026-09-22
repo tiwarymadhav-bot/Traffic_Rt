@@ -124,12 +124,15 @@
     <div class="stat"><span>Active buses</span><b id="sBuses">0</b></div>
     <div class="stat"><span>Trails on map</span><b id="sSegs">0</b></div>
     <div class="stat"><span>New this sync</span><b id="sNew">0</b></div>
+    <div class="stat"><span>Audit</span><b id="sAudit">–</b></div>
     <div class="stat"><span>Feeds OK</span><b id="sFeeds">–</b></div>
     <div class="stat"><span>Backend cycle</span><b id="sCycle">–</b></div>
     <div class="stat"><span>Last sync</span><b id="sSync">–</b></div>
     <p class="note" style="margin-top:12px">
       Only new trail segments are sent on each sync — the map is never redrawn from scratch,
       so panning and zooming stay smooth even with thousands of painted segments.
+      A background audit re-checks suspicious trails a minute after they are painted,
+      re-matching them with wider context and removing the ones it cannot confirm.
     </p>
   </div>
 </div>
@@ -194,7 +197,8 @@ function addSegment(f){
     `<b>Route ${p.route}</b> <span style="color:#8fa3bf">${(p.direction||'').toUpperCase()}</span><br>` +
     `Bus: ${p.bus_id}<br>Speed: <b style="color:${p.color}">${p.speed} km/h</b><br>` +
     `${new Date(p.ts*1000).toLocaleTimeString()}` +
-    (p.snapped === false ? '<br><span style="color:#8fa3bf">direct line (not matched)</span>' : '')
+    (p.snapped === false ? '<br><span style="color:#8fa3bf">direct line (not matched)</span>' : '') +
+    (p.revised ? '<br><span style="color:#69f0ae">corrected by audit</span>' : '')
   );
   ensureGroup(key).seg.addLayer(line);
   segments.set(p.seq, { layer:line, key, ts:p.ts*1000 });
@@ -217,6 +221,19 @@ function pruneSegments(){
     }
   }
   resetOpacity = false;
+}
+
+function removeSegments(seqs){
+  if (!seqs || !seqs.length) return 0;
+  let n = 0;
+  for (const seq of seqs){
+    const s = segments.get(seq);
+    if (!s) continue;
+    groups.get(s.key)?.seg.removeLayer(s.layer);
+    segments.delete(seq);
+    n++;
+  }
+  return n;
 }
 
 function clearTrails(){
@@ -299,6 +316,7 @@ async function sync(){
     const data = await res.json();
     cursor = data.cursor;
 
+    const gone = removeSegments(data.removed);   // audit corrected these
     for (const f of data.segments.features) addSegment(f);
     updateBuses(data.buses);
     pruneSegments();
@@ -309,6 +327,9 @@ async function sync(){
     document.getElementById('sSegs').textContent  = segments.size;
     document.getElementById('hSegs').textContent  = segments.size;
     document.getElementById('sNew').textContent   = s.new_segments;
+    const au = s.audit || {};
+    document.getElementById('sAudit').textContent =
+      (au.total_repaired || 0) + ' fixed / ' + (au.total_removed || 0) + ' removed';
     document.getElementById('sFeeds').textContent =
       (s.feeds_ok ?? 0) + '/' + ((s.feeds_ok ?? 0) + (s.feeds_failed ?? 0));
     document.getElementById('sCycle').textContent = (s.last_cycle_seconds ?? '–') + 's';
