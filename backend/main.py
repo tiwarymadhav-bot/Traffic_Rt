@@ -660,6 +660,7 @@ async def run_cycle(
 
     pending = []          # snapping work for this cycle
     bus_count = 0
+    seen_now: set = set()   # a bus is handled by ONE feed per cycle
 
     for uid, buses, _ok in results:
         meta = UID_INFO.get(uid, {})
@@ -675,8 +676,34 @@ async def run_cycle(
             if lat == 0 or lng == 0:
                 continue
 
+            # The DTC feeds return the same physical bus on BOTH directions of a
+            # route. Letting the label flip each cycle flips the corridor with
+            # it, and where the carriageways split - a flyover over a service
+            # loop - the hop gets matched onto the wrong one and draws a hook.
+            # So: first feed to report a bus this cycle owns it.
+            if bid in seen_now:
+                continue
+            seen_now.add(bid)
+
             bus_count += 1
             state = last_positions.get(bid)
+
+            if state is not None and state.get("uid") != uid:
+                # Ownership really did move (the old feed stopped reporting it,
+                # usually a turnaround at a terminal). Start a fresh track so
+                # nothing is painted across the change of direction.
+                state.update(
+                    uid=uid,
+                    route=meta.get("route", state.get("route")),
+                    direction=meta.get("direction", state.get("direction")),
+                    raw_route=bus.get("route", state.get("raw_route")),
+                    lat=lat, lng=lng, seen=now,
+                    anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
+                    bearing=None,
+                    history=[(lat, lng, now)],
+                    recent=[(lat, lng, now)],
+                )
+                continue
             if state is None:
                 last_positions[bid] = {
                     "lat": lat, "lng": lng,
