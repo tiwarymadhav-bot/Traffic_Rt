@@ -24,3 +24,6 @@ backup_*/
 .DS_Store
 Thumbs.db
 *.log
+
+# the route corridors ARE tracked - the backend needs them on Render
+!data/route_corridors.json

@@ -141,6 +141,37 @@ A hop is painted only if it survives all of these:
   120° is noise, not a U-turn.
 - Jumps over 5 km start a fresh track.
 
+## Route corridors (the strongest guard)
+
+Every tracked route has one fixed path, and the DTC site publishes it: each
+route page carries `_mapData.route_coords`, the full LineString of that
+route/direction (~400 points for route 85). `tools/build_route_corridors.py`
+collects all of them into `data/route_corridors.json`.
+
+```bash
+python tools/build_route_corridors.py             # all routes
+python tools/build_route_corridors.py --only 463 473
+python tools/build_route_corridors.py --refresh   # re-resolve cached sids
+```
+
+Then commit `data/route_corridors.json` (it is deliberately NOT gitignored) so
+Render gets it, and redeploy. Startup logs confirm it:
+
+```
+[corridor] 47 corridors loaded (18420 points, 41003 cells)
+```
+
+The backend densifies each corridor to 20 m spacing, buckets it into a ~50 m
+grid, and requires that **80 % of a painted path's points fall in that grid or
+its 3x3 neighbourhood** (so roughly 50-100 m of tolerance). A matched path that
+fails is retried as `/route`, then as the chord — and if the chord is off
+corridor too, nothing is painted and `hops_dropped` counts it.
+
+This is the only check that knows a route-463 bus does not belong on the
+DND-KMP Expressway: it is not on route 463 at all. No bow or ratio threshold can
+work that out, because a wrong road is still a road. Routes with no corridor in
+the file are simply left unconstrained.
+
 ## Map matching
 
 Road snapping uses OSRM's **/match** service (hidden-Markov map matching) over
@@ -175,4 +206,17 @@ Writes `data/delhi_roads_major.geojson` (overlay used by the dashboard's
 
 `POLL_INTERVAL`, `DTC_CONCURRENCY`, `OSRM_CONCURRENCY`, `SEGMENT_TTL`,
 `MAX_SEGMENTS`, `MIN_MOVE_M`, `MAX_JUMP_KM`, `MAX_PLAUSIBLE_KMH`, `SPEED_ALPHA`,
-`MATCH_WINDOW`, `MATCH_RADIUS_M`, `MAX_LEG_RATIO_SHORT/LONG`, `MAX_CROSS_TRACK_M`.
+`MATCH_WINDOW`, `MATCH_RADIUS_M`, `MAX_LEG_RATIO_SHORT/LONG`, `MAX_CROSS_TRACK_M`,
+`CORRIDOR_CELL_DEG`, `CORRIDOR_STEP_M`, `CORRIDOR_MIN_INSIDE`.
+
+## Diagnostics
+
+```
+/api/debug/segments?s=28.40&w=76.83&n=28.91&e=77.36&limit=300&min_bow=80
+```
+
+Returns the painted segments in a bounding box with `snapped`, `chord_m`,
+`len_m`, `ratio`, `bow_m`, plus the raw GPS fixes of the buses involved and the
+bow percentiles of everything in the box. `min_bow` / `min_ratio` filter it
+down to suspicious trails; an empty result means the box is clean. `ratio` near
+1.0 with a large bow is a real curve; 1.4+ is a detour.

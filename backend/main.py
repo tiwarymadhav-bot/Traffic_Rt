@@ -46,6 +46,7 @@ from fastapi.responses import FileResponse, JSONResponse
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 ROUTES_FILE = os.path.join(BASE_DIR, "routes.json")
+CORRIDOR_FILE = os.path.join(ROOT_DIR, "data", "route_corridors.json")
 FRONTEND_INDEX = os.path.join(ROOT_DIR, "frontend", "index.html")
 
 DTC_HOME = "https://www.dtcbusroutes.in/"
@@ -101,6 +102,15 @@ CROSS_TRACK_CEILING = 200.0
 LONG_HOP_M = 200            # above this, a failed match retries with /route
 MAX_CHORD_DRAW_M = 350      # never paint a straight line longer than this
 
+# ---- route corridors ------------------------------------------------------
+# Each route has one fixed path, published by the DTC site and collected by
+# tools/build_route_corridors.py. A painted trail must stay on its own route's
+# corridor. This is the only check that knows bus 463 does not belong on the
+# DND-KMP Expressway - no distance threshold can work that out.
+CORRIDOR_CELL_DEG = 0.00045   # ~50 m grid; a point is tested against its 3x3 cells
+CORRIDOR_STEP_M = 20.0        # densify the corridor so its cells are contiguous
+CORRIDOR_MIN_INSIDE = 0.8     # this fraction of a path's points must be on corridor
+
 # --------------------------------------------------------------------------
 # Route configuration
 # --------------------------------------------------------------------------
@@ -140,13 +150,84 @@ def load_route_config() -> Tuple[List[dict], int]:
     return routes, max(5, interval)
 
 
+CORRIDOR_CELLS: Dict[str, set] = {}
+
+
+def _cell(lat: float, lon: float) -> Tuple[int, int]:
+    return (int(lat // CORRIDOR_CELL_DEG), int(lon // CORRIDOR_CELL_DEG))
+
+
+def _cells_along(coords: List[List[float]]) -> set:
+    """Occupied grid cells of a polyline, densified so there are no holes."""
+    cells = set()
+    if not coords:
+        return cells
+    if len(coords) == 1:
+        cells.add(_cell(coords[0][1], coords[0][0]))
+        return cells
+    for (lon1, lat1), (lon2, lat2) in zip(coords, coords[1:]):
+        dist_m = haversine_km(lon1, lat1, lon2, lat2) * 1000.0
+        steps = max(1, int(dist_m / CORRIDOR_STEP_M))
+        for k in range(steps + 1):
+            f = k / steps
+            cells.add(_cell(lat1 + (lat2 - lat1) * f, lon1 + (lon2 - lon1) * f))
+    return cells
+
+
+def load_corridors() -> None:
+    """Read data/route_corridors.json (optional - absent means no constraint)."""
+    global CORRIDOR_CELLS
+    if not os.path.exists(CORRIDOR_FILE):
+        CORRIDOR_CELLS = {}
+        print(f"[corridor] {CORRIDOR_FILE} not found - matching runs unconstrained "
+              f"(build it with tools/build_route_corridors.py)")
+        return
+    try:
+        with open(CORRIDOR_FILE, "r", encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except Exception as exc:
+        print(f"[corridor] FAILED to read corridors: {exc}")
+        CORRIDOR_CELLS = {}
+        return
+
+    built, points = {}, 0
+    for key, coords in raw.items():
+        if isinstance(coords, list) and len(coords) >= 2:
+            built[key] = _cells_along(coords)
+            points += len(coords)
+    CORRIDOR_CELLS = built
+    print(f"[corridor] {len(built)} corridors loaded "
+          f"({points} points, {sum(len(c) for c in built.values())} cells)")
+
+
+def corridor_ok(key: str, path: List[List[float]]) -> bool:
+    """True if the path stays on its route's corridor (or none is known)."""
+    cells = CORRIDOR_CELLS.get(key)
+    if not cells or not path:
+        return True
+    inside = 0
+    for lon, lat in path:
+        ix, iy = _cell(lat, lon)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if (ix + dx, iy + dy) in cells:
+                    inside += 1
+                    break
+            else:
+                continue
+            break
+    return inside >= len(path) * CORRIDOR_MIN_INSIDE
+
+
 def refresh_route_config() -> None:
     global ROUTE_CONFIG, UID_INFO, POLL_INTERVAL
     ROUTE_CONFIG, POLL_INTERVAL = load_route_config()
     UID_INFO = {r["uid"]: r for r in ROUTE_CONFIG}
+    load_corridors()
 
 
-refresh_route_config()
+# NB: the initial refresh_route_config() call lives below the geo helpers,
+# because building corridor cells needs haversine_km.
 
 # --------------------------------------------------------------------------
 # Live state
@@ -161,6 +242,7 @@ _cycle_stats = {
     "feeds_failed": 0,
     "buses_seen": 0,
     "segments_added": 0,
+    "hops_dropped": 0,     # off-corridor or too long to paint as a straight line
 }
 
 _dtc_session: Optional[aiohttp.ClientSession] = None
@@ -228,6 +310,10 @@ def decimate(coords: List[List[float]]) -> List[List[float]]:
         picked[-1] = coords[-1]
         coords = picked
     return [[round(c[0], COORD_DP), round(c[1], COORD_DP)] for c in coords]
+
+
+# Routes + corridors are loaded here: everything they need is defined above.
+refresh_route_config()
 
 
 # --------------------------------------------------------------------------
@@ -364,9 +450,11 @@ def _leg_geometry(matching: dict, leg_index: int) -> List[List[float]]:
     return out
 
 
-def _path_ok(path, chord_m, leg_m, a, b) -> bool:
-    """Shared detour guards for both /match and /route results."""
+def _path_ok(path, chord_m, leg_m, a, b, ckey: str = "") -> bool:
+    """Shared guards for both /match and /route results."""
     if len(path) < 2:
+        return False
+    if ckey and not corridor_ok(ckey, path):
         return False
     ratio_cap = MAX_LEG_RATIO_SHORT if chord_m < SHORT_HOP_M else MAX_LEG_RATIO_LONG
     if chord_m > 25 and leg_m > chord_m * ratio_cap:
@@ -382,6 +470,7 @@ async def route_hop(
     session: aiohttp.ClientSession,
     sem: asyncio.Semaphore,
     lat1: float, lon1: float, lat2: float, lon2: float, chord_m: float,
+    ckey: str = "",
 ) -> List[List[float]]:
     """Plain A->B routing. Only used for long hops, where it is reliable."""
     url = (
@@ -398,7 +487,7 @@ async def route_hop(
                     return []
                 r = data["routes"][0]
                 path = r["geometry"]["coordinates"]
-                if _path_ok(path, chord_m, r.get("distance", 0.0), (lat1, lon1), (lat2, lon2)):
+                if _path_ok(path, chord_m, r.get("distance", 0.0), (lat1, lon1), (lat2, lon2), ckey):
                     return path
         except asyncio.TimeoutError:
             pass
@@ -411,6 +500,7 @@ async def match_to_road(
     session: aiohttp.ClientSession,
     sem: asyncio.Semaphore,
     history: List[Tuple[float, float, float]],
+    ckey: str = "",
 ) -> Tuple[List[List[float]], Optional[int], bool]:
     """
     Snap the newest hop of a bus onto the road network.
@@ -432,7 +522,9 @@ async def match_to_road(
     chord_m = haversine_km(lon1, lat1, lon2, lat2) * 1000.0
 
     def _give_up() -> Tuple[List[List[float]], Optional[int], bool]:
-        if chord_m <= MAX_CHORD_DRAW_M:
+        # Painting the chord is only honest if the chord itself lies on the
+        # route. A bus whose fixes have drifted off its corridor gets nothing.
+        if chord_m <= MAX_CHORD_DRAW_M and (not ckey or corridor_ok(ckey, chord)):
             return chord, bearing, False
         return [], bearing, False
 
@@ -461,7 +553,7 @@ async def match_to_road(
                             if (matching.get("confidence") or 0) >= MIN_CONFIDENCE:
                                 path = _leg_geometry(matching, wi - 1)
                                 leg_m = (matching.get("legs") or [{}])[wi - 1].get("distance", 0.0)
-                                if _path_ok(path, chord_m, leg_m, a, b):
+                                if _path_ok(path, chord_m, leg_m, a, b, ckey):
                                     matched = path
         except asyncio.TimeoutError:
             pass
@@ -472,7 +564,7 @@ async def match_to_road(
         return matched, bearing, True
 
     if chord_m > LONG_HOP_M:
-        routed = await route_hop(session, sem, lat1, lon1, lat2, lon2, chord_m)
+        routed = await route_hop(session, sem, lat1, lon1, lat2, lon2, chord_m, ckey)
         if routed:
             return routed, bearing, True
 
@@ -614,21 +706,23 @@ async def run_cycle(
                         (lat, lng, now)]
             state["history"] = hist
 
-            pending.append({"bid": bid, "state": state, "speed": speed, "history": hist})
+            pending.append({"bid": bid, "state": state, "speed": speed, "history": hist,
+                            "ckey": f"{state.get('route')}|{state.get('direction')}"})
             # anchor moves forward whether or not OSRM answers
             state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
 
     snapped = []
     if pending:
         snapped = await asyncio.gather(
-            *(match_to_road(osrm_session, osrm_sem, p["history"]) for p in pending)
+            *(match_to_road(osrm_session, osrm_sem, p["history"], p["ckey"]) for p in pending)
         )
 
-    added = 0
+    added = dropped = 0
     for p, (path, bearing, was_snapped) in zip(pending, snapped):
         if bearing is not None:
             p["state"]["bearing"] = bearing
         if not path or len(path) < 2:
+            dropped += 1
             continue
         st = p["state"]
         active_segments.append(
@@ -659,10 +753,12 @@ async def run_cycle(
         feeds_failed=feeds_failed,
         buses_seen=bus_count,
         segments_added=added,
+        hops_dropped=dropped,
     )
     print(
         f"[tracker] {bus_count} buses | feeds {feeds_ok}/{len(results)} ok "
         f"| +{added} segments (total {len(active_segments)}) "
+        f"| {dropped} dropped "
         f"| {_cycle_stats['last_cycle_seconds']}s",
         flush=True,
     )
@@ -957,6 +1053,7 @@ async def debug_segments(
         "filters": {"min_bow": min_bow, "min_ratio": min_ratio},
         "bow_percentiles": {"p50": pct(0.5), "p90": pct(0.9), "p99": pct(0.99),
                             "max": round(max(bows), 1) if bows else None},
+        "corridors_loaded": len(CORRIDOR_CELLS),
         "cross_track_cap_now": {
             "base_m": MAX_CROSS_TRACK_M,
             "fraction_of_chord": CROSS_TRACK_FRACTION,
@@ -973,6 +1070,7 @@ async def health():
     return {
         "ok": True,
         "feeds": len(ROUTE_CONFIG),
+        "corridors": len(CORRIDOR_CELLS),
         "buses": len(last_positions),
         "segments": len(active_segments),
         **_cycle_stats,
