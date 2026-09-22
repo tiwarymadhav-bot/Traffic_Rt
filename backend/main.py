@@ -210,13 +210,36 @@ def load_corridors() -> None:
           f"({points} points, {sum(len(c) for c in built.values())} cells)")
 
 
+def _densify(path: List[List[float]], step_m: float = 25.0) -> List[List[float]]:
+    """
+    Sample a polyline every ~step_m.
+
+    Essential before the corridor test: a straight chord has only TWO points,
+    both of them on the route, so testing the raw path would pass any line that
+    cuts across a block between two on-route fixes. Sampling the line itself is
+    what catches that.
+    """
+    if len(path) < 2:
+        return list(path)
+    out: List[List[float]] = []
+    for (lon1, lat1), (lon2, lat2) in zip(path, path[1:]):
+        dist_m = haversine_km(lon1, lat1, lon2, lat2) * 1000.0
+        steps = max(1, int(dist_m / step_m))
+        for k in range(steps):
+            f = k / steps
+            out.append([lon1 + (lon2 - lon1) * f, lat1 + (lat2 - lat1) * f])
+    out.append(list(path[-1]))
+    return out
+
+
 def corridor_ok(key: str, path: List[List[float]]) -> bool:
     """True if the path stays on its route's corridor (or none is known)."""
     cells = CORRIDOR_CELLS.get(key)
     if not cells or not path:
         return True
+    dense = _densify(path)
     inside = 0
-    for lon, lat in path:
+    for lon, lat in dense:
         ix, iy = _cell(lat, lon)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
@@ -226,7 +249,7 @@ def corridor_ok(key: str, path: List[List[float]]) -> bool:
             else:
                 continue
             break
-    return inside >= len(path) * CORRIDOR_MIN_INSIDE
+    return inside >= len(dense) * CORRIDOR_MIN_INSIDE
 
 
 def refresh_route_config() -> None:
@@ -284,11 +307,15 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> int
     return int((degrees(atan2(x, y)) + 360) % 360)
 
 
+JAM_BELOW_KMH = _env_float("JAM_BELOW_KMH", 5.0)
+FAST_ABOVE_KMH = _env_float("FAST_ABOVE_KMH", 11.0)
+
+
 def color_for_speed(speed_kmh: float) -> str:
     """Three modes only: heavy jam / moderate / fast."""
-    if speed_kmh < 5:
+    if speed_kmh < JAM_BELOW_KMH:
         return "#ff4d4d"      # heavy jam
-    if speed_kmh < 15:
+    if speed_kmh <= FAST_ABOVE_KMH:
         return "#ffa502"      # moderate
     return "#2ed573"          # fast / free flow
 
