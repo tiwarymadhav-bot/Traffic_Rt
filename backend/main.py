@@ -55,6 +55,14 @@ OSRM_MATCH_URL = "https://router.project-osrm.org/match/v1/driving/"
 OSRM_ROUTE_URL = "https://router.project-osrm.org/route/v1/driving/"
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 def _env_int(name: str, default: int) -> int:
     """Tunables can be overridden by environment variables (Render, Docker...)."""
     try:
@@ -107,9 +115,11 @@ MAX_CHORD_DRAW_M = 350      # never paint a straight line longer than this
 # tools/build_route_corridors.py. A painted trail must stay on its own route's
 # corridor. This is the only check that knows bus 463 does not belong on the
 # DND-KMP Expressway - no distance threshold can work that out.
-CORRIDOR_CELL_DEG = 0.00045   # ~50 m grid; a point is tested against its 3x3 cells
+# Both are env-tunable so the tolerance can be adjusted on a running deploy.
+CORRIDOR_CELL_M = _env_float("CORRIDOR_CELL_M", 50.0)     # grid cell size
+CORRIDOR_CELL_DEG = CORRIDOR_CELL_M / 111320.0            # 3x3 cells => ~1-2x this
 CORRIDOR_STEP_M = 20.0        # densify the corridor so its cells are contiguous
-CORRIDOR_MIN_INSIDE = 0.8     # this fraction of a path's points must be on corridor
+CORRIDOR_MIN_INSIDE = _env_float("CORRIDOR_MIN_INSIDE", 0.8)
 
 # --------------------------------------------------------------------------
 # Route configuration
@@ -242,8 +252,14 @@ _cycle_stats = {
     "feeds_failed": 0,
     "buses_seen": 0,
     "segments_added": 0,
-    "hops_dropped": 0,     # off-corridor or too long to paint as a straight line
+    "hops_dropped": 0,
+    "dropped_off_corridor": 0,
+    "dropped_long_chord": 0,
 }
+
+# why the last few hops were dropped, for /api/debug/drops
+DROP_SAMPLES: List[dict] = []
+_drop_counts = {"corridor": 0, "long_chord": 0}
 
 _dtc_session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
@@ -524,8 +540,18 @@ async def match_to_road(
     def _give_up() -> Tuple[List[List[float]], Optional[int], bool]:
         # Painting the chord is only honest if the chord itself lies on the
         # route. A bus whose fixes have drifted off its corridor gets nothing.
-        if chord_m <= MAX_CHORD_DRAW_M and (not ckey or corridor_ok(ckey, chord)):
+        on_corridor = (not ckey) or corridor_ok(ckey, chord)
+        if chord_m <= MAX_CHORD_DRAW_M and on_corridor:
             return chord, bearing, False
+        reason = "long_chord" if chord_m > MAX_CHORD_DRAW_M else "corridor"
+        _drop_counts[reason] += 1
+        DROP_SAMPLES.append({
+            "reason": reason, "route": ckey, "chord_m": round(chord_m),
+            "from": [round(lat1, 5), round(lon1, 5)],
+            "to": [round(lat2, 5), round(lon2, 5)],
+            "ts": round(time.time()),
+        })
+        del DROP_SAMPLES[:-40]
         return [], bearing, False
 
     coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon, _ in history)
@@ -717,6 +743,7 @@ async def run_cycle(
             *(match_to_road(osrm_session, osrm_sem, p["history"], p["ckey"]) for p in pending)
         )
 
+    _drop_counts["corridor"] = _drop_counts["long_chord"] = 0
     added = dropped = 0
     for p, (path, bearing, was_snapped) in zip(pending, snapped):
         if bearing is not None:
@@ -754,6 +781,8 @@ async def run_cycle(
         buses_seen=bus_count,
         segments_added=added,
         hops_dropped=dropped,
+        dropped_off_corridor=_drop_counts["corridor"],
+        dropped_long_chord=_drop_counts["long_chord"],
     )
     print(
         f"[tracker] {bus_count} buses | feeds {feeds_ok}/{len(results)} ok "
@@ -1062,6 +1091,25 @@ async def debug_segments(
         "by_bus": buses,
         "segments": rows,
         "raw_fixes_of_those_buses": live,
+    }
+
+
+@app.get("/api/debug/drops")
+async def debug_drops():
+    """The last few hops that were not painted, and why."""
+    return {
+        "corridor_tolerance": {
+            "cell_m": CORRIDOR_CELL_M,
+            "effective_m": round(CORRIDOR_CELL_M * 2),
+            "min_inside": CORRIDOR_MIN_INSIDE,
+            "corridors_loaded": len(CORRIDOR_CELLS),
+        },
+        "last_cycle": {
+            "off_corridor": _cycle_stats["dropped_off_corridor"],
+            "long_chord": _cycle_stats["dropped_long_chord"],
+            "painted": _cycle_stats["segments_added"],
+        },
+        "samples": list(reversed(DROP_SAMPLES)),
     }
 
 
