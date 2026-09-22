@@ -92,7 +92,12 @@ MIN_CONFIDENCE = 0.01       # OSRM reports low confidence on curves, so keep thi
 MAX_LEG_RATIO_SHORT = 1.8   # short hop: a detour around the block is obvious
 MAX_LEG_RATIO_LONG = 2.5    # long hop: flyovers and loops legitimately add distance
 SHORT_HOP_M = 300
-MAX_CROSS_TRACK_M = 120     # base allowance for a matched path to stray from the chord
+# Base allowance for a matched path to stray from its own chord. Measured on a
+# 300-segment live sample: p50 = 1 m, p90 = 14 m, p99 = 66 m, max = 78 m. So 80 m
+# keeps every healthy trail and still catches a jump onto a parallel road.
+MAX_CROSS_TRACK_M = 80
+CROSS_TRACK_FRACTION = 0.25  # long hops may bow further (real curves)
+CROSS_TRACK_CEILING = 200.0
 LONG_HOP_M = 200            # above this, a failed match retries with /route
 MAX_CHORD_DRAW_M = 350      # never paint a straight line longer than this
 
@@ -366,7 +371,10 @@ def _path_ok(path, chord_m, leg_m, a, b) -> bool:
     ratio_cap = MAX_LEG_RATIO_SHORT if chord_m < SHORT_HOP_M else MAX_LEG_RATIO_LONG
     if chord_m > 25 and leg_m > chord_m * ratio_cap:
         return False
-    cross_cap = min(300.0, max(MAX_CROSS_TRACK_M, chord_m * 0.4))
+    cross_cap = min(
+        CROSS_TRACK_CEILING,
+        max(MAX_CROSS_TRACK_M, chord_m * CROSS_TRACK_FRACTION),
+    )
     return max_cross_track_m(path, a, b) <= cross_cap
 
 
@@ -862,6 +870,8 @@ async def debug_segments(
     s: float = Query(...), w: float = Query(...),
     n: float = Query(...), e: float = Query(...),
     limit: int = Query(60, ge=1, le=300),
+    min_bow: float = Query(0.0, ge=0),
+    min_ratio: float = Query(0.0, ge=0),
 ):
     """
     Diagnostics: which segments were painted inside a bounding box, and how.
@@ -875,6 +885,8 @@ async def debug_segments(
     they say whether a trail took a detour or followed the road.
     """
     rows = []
+    scanned = 0
+    bows: List[float] = []
     for seg in reversed(active_segments):
         path = seg["path"]
         if not any(s < p[1] < n and w < p[0] < e for p in path):
@@ -886,6 +898,12 @@ async def debug_segments(
             haversine_km(p[0], p[1], q[0], q[1]) * 1000.0
             for p, q in zip(path, path[1:])
         )
+        bow = max_cross_track_m(path, a, b)
+        ratio = (length_m / chord_m) if chord_m > 1 else 0.0
+        scanned += 1
+        bows.append(bow)
+        if bow < min_bow or ratio < min_ratio:
+            continue
         rows.append(
             {
                 "seq": seg["seq"],
@@ -897,8 +915,8 @@ async def debug_segments(
                 "pts": len(path),
                 "chord_m": round(chord_m),
                 "len_m": round(length_m),
-                "ratio": round(length_m / chord_m, 2) if chord_m > 1 else None,
-                "bow_m": round(max_cross_track_m(path, a, b)),
+                "ratio": round(ratio, 2) if chord_m > 1 else None,
+                "bow_m": round(bow),
                 "age_s": round(time.time() - seg["ts"]),
                 "start": [round(path[0][1], 5), round(path[0][0], 5)],
                 "end": [round(path[-1][1], 5), round(path[-1][0], 5)],
@@ -926,9 +944,24 @@ async def debug_segments(
                 }
             )
 
+    def pct(p: float) -> Optional[float]:
+        if not bows:
+            return None
+        q = sorted(bows)
+        return round(q[min(len(q) - 1, int(len(q) * p))], 1)
+
     return {
         "bbox": {"s": s, "w": w, "n": n, "e": e},
-        "matched": len(rows),
+        "in_bbox": scanned,
+        "returned": len(rows),
+        "filters": {"min_bow": min_bow, "min_ratio": min_ratio},
+        "bow_percentiles": {"p50": pct(0.5), "p90": pct(0.9), "p99": pct(0.99),
+                            "max": round(max(bows), 1) if bows else None},
+        "cross_track_cap_now": {
+            "base_m": MAX_CROSS_TRACK_M,
+            "fraction_of_chord": CROSS_TRACK_FRACTION,
+            "ceiling_m": CROSS_TRACK_CEILING,
+        },
         "by_bus": buses,
         "segments": rows,
         "raw_fixes_of_those_buses": live,
