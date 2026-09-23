@@ -173,6 +173,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", help="limit to these route numbers")
     ap.add_argument("--refresh", action="store_true", help="ignore cached sids")
+    ap.add_argument("--no-smooth", action="store_true",
+                    help="keep long straight jumps in the published line as they are")
     args = ap.parse_args()
 
     with open(ROUTES_FILE, "r", encoding="utf-8-sig") as fh:
