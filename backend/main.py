@@ -501,8 +501,8 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> int
     return int((degrees(atan2(x, y)) + 360) % 360)
 
 
-JAM_BELOW_KMH = _env_float("JAM_BELOW_KMH", 5.0)
-FAST_ABOVE_KMH = _env_float("FAST_ABOVE_KMH", 11.0)
+JAM_BELOW_KMH = _env_float("JAM_BELOW_KMH", 4.0)
+FAST_ABOVE_KMH = _env_float("FAST_ABOVE_KMH", 9.0)
 
 
 def color_for_speed(speed_kmh: float) -> str:

@@ -119,9 +119,9 @@ The live API is keyed by an **internal UID**, not the public bus number
 
 | Speed | Status | Colour |
 |---|---|---|
-| < 5 km/h | Heavy jam | red |
-| 5–11 | Moderate | orange |
-| > 11 | Fast | green |
+| < 4 km/h | Heavy jam | red |
+| 4–9 | Moderate | orange |
+| > 9 | Fast | green |
 
 Speed is an exponential moving average (α = 0.45), so colours do not flicker
 between polls.
