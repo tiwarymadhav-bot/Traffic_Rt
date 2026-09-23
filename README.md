@@ -119,9 +119,9 @@ The live API is keyed by an **internal UID**, not the public bus number
 
 | Speed | Status | Colour |
 |---|---|---|
-| < 4 km/h | Heavy jam | red |
-| 4–9 | Moderate | orange |
-| > 9 | Fast | green |
+| < 5 km/h | Heavy jam | red |
+| 5–11 | Moderate | orange |
+| > 11 | Fast | green |
 
 Speed is an exponential moving average (α = 0.45), so colours do not flicker
 between polls.
@@ -254,6 +254,73 @@ This is the only check that knows a route-463 bus does not belong on the
 DND-KMP Expressway: it is not on route 463 at all. No bow or ratio threshold can
 work that out, because a wrong road is still a road. Routes with no corridor in
 the file are simply left unconstrained.
+
+## Keeping the corridors honest
+
+The trail is painted straight along the corridor, so a trail on a flyover means
+the *corridor* is on the flyover - the matcher is doing its job with a wrong map.
+Lines get there two ways: the published DTC line takes the flyover, or the gap
+smoothing above routed a long jump through OSRM, whose car profile always prefers
+the fast road (the flyover) over the service road the bus actually uses.
+
+The stops settle it. A bus must serve its stops and **a flyover has none**, so a
+stretch of line that has run away from its own stops is wrong by definition.
+
+```bash
+python tools/audit_corridors.py                 # report only, changes nothing
+python tools/audit_corridors.py --json data/corridor_audit.json
+python tools/repair_corridors.py --dry-run      # what would change
+python tools/repair_corridors.py                # rebuild the bad stretches
+```
+
+`audit_corridors.py` projects every stop onto its own line and measures the
+offset. One stop 30 m out is ordinary noise; several *consecutive* stops out, all
+on the same side, is a line that left the road. A lone off stop is reported only
+when its neighbours are drifting too - a wrong line drags the whole sequence off,
+whereas `306|up` stop #14 sits 43 m out between neighbours at 0 m and 4 m, which
+says the stop coordinate is wrong, not the corridor. Without that rule the audit
+reported twice as many places and the repair asked a router for 18 km of detour
+to replace 455 m of road. Findings are grouped by place,
+because one bad junction shows up once per route through it, and each place comes
+with an OpenStreetMap link to eyeball.
+
+The stop test has one blind spot, and it is the important one: **a flyover has
+no stops at all**, so the nearest stops sit comfortably before and after it, each
+close to the line, and nothing looks wrong. So there is a second test, on road
+class. A DTC bus does not run on the DND Flyway, over the Ashram Flyover or along
+the Delhi-Meerut Expressway, so a corridor point whose nearest road (within 20 m)
+is `motorway` or `motorway_link` is wrong by class alone, whatever the stops say.
+That test uses `data/delhi_roads_major.geojson`; without the file it is skipped.
+
+`repair_corridors.py` rebuilds only the flagged stretches, and rebuilds them
+**through the stops** - the stops go to OSRM as via-points with a 30 m snapping
+radius, so the returned path has to come down to the road that serves them. Every
+rebuild is then checked before it is kept: it must bring its worst stop within
+20 m, must not be more than 1.6x the length it replaced, and must start and end
+where the old piece did. Anything else is discarded and the original line stays.
+A motorway stretch is rebuilt **without any router at all**. The public OSRM
+server refuses `exclude=motorway` - it answers *"Exclude flag combination is not
+supported"* - so it cannot be told to keep a bus off a flyover. But
+`data/delhi_roads_major.geojson` is an osmnx edge export: every feature carries
+`u`/`v` node ids, a length and a oneway flag, so it already **is** a graph.
+`tools/offline_router.py` builds that graph with the motorway edges left out and
+runs Dijkstra over what remains, so the exclusion is structural rather than a
+request a server may decline. Only 140 of 7306 edges are motorway and the rest
+stay one connected component, so nothing useful is lost.
+
+Two details make it work on real Delhi roads. Main roads are one-way pairs, so
+each end is snapped using the direction the bus is travelling there - the nearest
+edge is often the opposite carriageway, from which the graph may not reach the
+destination at all. And every edge within reach of an end is offered to Dijkstra
+as a way in or out, priced by distance and direction, because the major-roads
+extract has dangling one-way stubs where a road continues into a class that was
+not exported; snap to one of those alone and the search goes nowhere.
+
+Measured on the live corridors: eight stretches across `469`, `543`, `543A` and
+`OMS` came off the Ashram Flyover with 0 m of motorway left and the length
+within 1 % of what they replaced.
+
+A repair can improve a corridor or do nothing - never make it worse.
 
 ## Map matching
 
