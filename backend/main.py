@@ -207,6 +207,7 @@ def load_corridors() -> None:
     global CORRIDOR_CELLS
     if not os.path.exists(CORRIDOR_FILE):
         CORRIDOR_CELLS = {}
+        CORRIDOR_LINES.clear()
         print(f"[corridor] {CORRIDOR_FILE} not found - matching runs unconstrained "
               f"(build it with tools/build_route_corridors.py)")
         return
@@ -216,16 +217,24 @@ def load_corridors() -> None:
     except Exception as exc:
         print(f"[corridor] FAILED to read corridors: {exc}")
         CORRIDOR_CELLS = {}
+        CORRIDOR_LINES.clear()
         return
 
     built, points = {}, 0
+    lines = {}
     for key, coords in raw.items():
         if isinstance(coords, list) and len(coords) >= 2:
             built[key] = _cells_along(coords)
             points += len(coords)
+            line = _build_line(coords)
+            if line:
+                lines[key] = line
     CORRIDOR_CELLS = built
+    CORRIDOR_LINES.clear()
+    CORRIDOR_LINES.update(lines)
     print(f"[corridor] {len(built)} corridors loaded "
-          f"({points} points, {sum(len(c) for c in built.values())} cells)")
+          f"({points} points, {sum(len(c) for c in built.values())} cells); "
+          f"{len(CORRIDOR_LINES)} usable as route lines")
 
 
 def _densify(path: List[List[float]], step_m: float = 25.0) -> List[List[float]]:
@@ -270,6 +279,165 @@ def corridor_ok(key: str, path: List[List[float]]) -> bool:
     return inside >= len(dense) * CORRIDOR_MIN_INSIDE
 
 
+# --------------------------------------------------------------------------
+# Linear referencing: paint along the route's own line
+# --------------------------------------------------------------------------
+# Asking a router "which road is this bus on?" cannot work where a flyover, its
+# service road and a metro viaduct sit 20-40 m apart and the GPS error is 30-50 m.
+# Every answer inside that radius is "a road", so no threshold can reject the
+# wrong one.
+#
+# But a bus is not free to be on any road: it runs one fixed published line. So
+# instead of choosing a road, project each fix ONTO that line and paint the
+# slice of the line between two projections. The trail is then exactly the route
+# by construction - it cannot take a service road, cut a corner, jump a
+# carriageway or cross a block, because none of those are on the line. Distance
+# travelled is measured along the road too, which makes the speed better than a
+# straight-line estimate.
+
+MAX_OFFROUTE_M = _env_float("MAX_OFFROUTE_M", 150.0)  # fix further than this: not on route
+BACKWARD_TOL_M = 30.0        # small negative progress is GPS noise, not reversing
+PROJECT_WINDOW_M = 2500.0    # search window around the previous position on the line
+
+CORRIDOR_LINES: Dict[str, dict] = {}   # key -> {"pts": [(lat,lon)], "cum": [metres]}
+
+
+def _build_line(coords: List[List[float]]) -> Optional[dict]:
+    """[[lon,lat], ...] -> point list plus cumulative distance along it."""
+    pts: List[Tuple[float, float]] = []
+    for c in coords:
+        try:
+            p = (float(c[1]), float(c[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not pts or pts[-1] != p:
+            pts.append(p)
+    if len(pts) < 2:
+        return None
+    cum = [0.0]
+    for (la1, lo1), (la2, lo2) in zip(pts, pts[1:]):
+        cum.append(cum[-1] + haversine_km(lo1, la1, lo2, la2) * 1000.0)
+    return {"pts": pts, "cum": cum}
+
+
+def project_on_line(line: dict, lat: float, lon: float,
+                    hint_m: Optional[float] = None) -> Tuple[float, float]:
+    """
+    Nearest point on the route line -> (distance_from_line_m, chainage_m).
+
+    `hint_m` restricts the search to the stretch around where the bus was last
+    seen. That is what keeps a ring route (OMS passes the same junction twice)
+    from snapping to the wrong lap.
+    """
+    pts, cum = line["pts"], line["cum"]
+    lo, hi = 0, len(pts) - 1
+    if hint_m is not None:
+        import bisect
+        lo = max(0, bisect.bisect_left(cum, hint_m - PROJECT_WINDOW_M) - 1)
+        hi = min(len(pts) - 1, bisect.bisect_right(cum, hint_m + PROJECT_WINDOW_M))
+
+    mx = 111320.0 * cos(radians(lat))
+    my = 110540.0
+    px, py = lon * mx, lat * my
+
+    best_d, best_c = float("inf"), 0.0
+    for i in range(lo, hi):
+        (alat, alon) = pts[i]
+        (blat, blon) = pts[i + 1]
+        ax, ay = alon * mx, alat * my
+        bx, by = blon * mx, blat * my
+        dx, dy = bx - ax, by - ay
+        den = dx * dx + dy * dy
+        t = 0.0 if den == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / den))
+        cx, cy = ax + t * dx, ay + t * dy
+        d = sqrt((px - cx) ** 2 + (py - cy) ** 2)
+        if d < best_d:
+            best_d = d
+            best_c = cum[i] + t * (cum[i + 1] - cum[i])
+    return best_d, best_c
+
+
+def _point_at(line: dict, chain_m: float) -> Tuple[float, float]:
+    """(lat, lon) at a given distance along the line."""
+    import bisect
+    pts, cum = line["pts"], line["cum"]
+    chain_m = max(0.0, min(chain_m, cum[-1]))
+    i = max(0, min(bisect.bisect_right(cum, chain_m) - 1, len(pts) - 2))
+    span = cum[i + 1] - cum[i]
+    t = 0.0 if span <= 0 else (chain_m - cum[i]) / span
+    (alat, alon), (blat, blon) = pts[i], pts[i + 1]
+    return (alat + (blat - alat) * t, alon + (blon - alon) * t)
+
+
+def slice_line(line: dict, c0: float, c1: float) -> List[List[float]]:
+    """The piece of the route line between two chainages, as [[lon,lat], ...]."""
+    import bisect
+    pts, cum = line["pts"], line["cum"]
+    if c1 < c0:
+        c0, c1 = c1, c0
+    lat0, lon0 = _point_at(line, c0)
+    lat1, lon1 = _point_at(line, c1)
+    out = [[lon0, lat0]]
+    i = bisect.bisect_right(cum, c0)
+    while i < len(pts) and cum[i] < c1:
+        la, lo = pts[i]
+        if [lo, la] != out[-1]:
+            out.append([lo, la])
+        i += 1
+    if [lon1, lat1] != out[-1]:
+        out.append([lon1, lat1])
+    return out
+
+
+def corridor_hop(route: str, direction: str, state: dict,
+                 lat: float, lon: float) -> Optional[dict]:
+    """
+    Place this fix on the route line and return the stretch travelled since the
+    anchor, or a reason why nothing should be painted.
+
+    Returns None when the route has no line (caller falls back to the router).
+    Otherwise {"status": ..., ...} where status is one of
+    ok | offroute | stationary | backwards | reversed.
+    """
+    key = f"{route}|{direction}"
+    line = CORRIDOR_LINES.get(key)
+    if not line:
+        return None
+
+    hint = state.get("chain")
+    dist_m, chain = project_on_line(line, lat, lon, hint)
+    if dist_m > MAX_OFFROUTE_M:
+        return {"status": "offroute", "off_m": dist_m}
+
+    prev_chain = state.get("chain")
+    if prev_chain is None:
+        return {"status": "stationary", "chain": chain, "off_m": dist_m}
+
+    delta = chain - prev_chain
+    if abs(delta) < BACKWARD_TOL_M:
+        return {"status": "stationary", "chain": chain, "off_m": dist_m}
+
+    if delta < 0:
+        # Travelling against this direction's line. Usually the feed put the bus
+        # on the wrong direction; the opposite line will show it going forward.
+        other = "down" if direction == "up" else "up"
+        other_line = CORRIDOR_LINES.get(f"{route}|{other}")
+        if other_line is not None:
+            o_dist, o_chain = project_on_line(other_line, lat, lon)
+            if o_dist <= MAX_OFFROUTE_M:
+                return {"status": "reversed", "direction": other,
+                        "chain": o_chain, "off_m": o_dist}
+        return {"status": "backwards", "chain": chain, "off_m": dist_m}
+
+    return {
+        "status": "ok",
+        "chain": chain,
+        "off_m": dist_m,
+        "along_m": delta,
+        "path": slice_line(line, prev_chain, chain),
+    }
+
+
 def refresh_route_config() -> None:
     global ROUTE_CONFIG, UID_INFO, POLL_INTERVAL
     ROUTE_CONFIG, POLL_INTERVAL = load_route_config()
@@ -296,6 +464,7 @@ _cycle_stats = {
     "hops_dropped": 0,
     "dropped_off_corridor": 0,
     "dropped_long_chord": 0,
+    "on_line": {},
 }
 
 # segments removed by the audit; clients learn about them through `removed`
@@ -306,6 +475,8 @@ AUDIT_STATS = {"last_run": 0.0, "checked": 0, "repaired": 0, "removed": 0,
 # why the last few hops were dropped, for /api/debug/drops
 DROP_SAMPLES: List[dict] = []
 _drop_counts = {"corridor": 0, "long_chord": 0}
+# linear-referencing outcomes this cycle
+_lr_counts = {"painted": 0, "offroute": 0, "backwards": 0, "reversed": 0}
 
 _dtc_session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
@@ -894,6 +1065,9 @@ async def run_cycle(
     osrm_sem: asyncio.Semaphore,
 ) -> None:
     now = time.time()
+    _drop_counts["corridor"] = _drop_counts["long_chord"] = 0
+    for _k in _lr_counts:
+        _lr_counts[_k] = 0
     uids = [r["uid"] for r in ROUTE_CONFIG]
     if not uids:
         print("[tracker] routes.json has no routes - nothing to track")
@@ -949,6 +1123,7 @@ async def run_cycle(
                     history=[(lat, lng, now)],
                     recent=[(lat, lng, now)],
                     track=[(lat, lng, now)],
+                    chain=None,
                 )
                 continue
             if state is None:
@@ -959,6 +1134,7 @@ async def run_cycle(
                     "history": [(lat, lng, now)],
                     "recent": [(lat, lng, now)],
                     "track": [(lat, lng, now)],
+                    "chain": None,
                     "route": meta.get("route", bus.get("route", "?")),
                     "direction": meta.get("direction", ""),
                     "raw_route": bus.get("route", ""),
@@ -1017,7 +1193,7 @@ async def run_cycle(
                 # real teleport: start a fresh track, do not paint across Delhi
                 state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
                              history=[(lat, lng, now)], recent=[(lat, lng, now)],
-                             track=[(lat, lng, now)])
+                             track=[(lat, lng, now)], chain=None)
                 continue
 
             # A fix that implies a silly speed is usually a delayed update, not a
@@ -1029,6 +1205,62 @@ async def run_cycle(
             speed = raw_speed if prev is None else (SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
             state["speed"] = speed
 
+            # ---- preferred path: place the fix on the route's own line ----
+            lr = corridor_hop(state.get("route"), state.get("direction"), state, lat, lng)
+            if lr is not None:
+                status = lr["status"]
+
+                if status == "reversed":
+                    # The feed had it on the wrong direction. Adopt the one the
+                    # movement actually agrees with and restart the track there.
+                    state.update(direction=lr["direction"], chain=lr["chain"],
+                                 anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
+                                 history=[(lat, lng, now)], recent=[(lat, lng, now)])
+                    _lr_counts["reversed"] += 1
+                    continue
+
+                if status in ("offroute", "backwards"):
+                    _lr_counts[status] += 1
+                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
+                    if status == "offroute":
+                        state["chain"] = None
+                    continue
+
+                if status == "stationary":
+                    state["chain"] = lr.get("chain", state.get("chain"))
+                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
+                    continue
+
+                # status == "ok": distance measured ALONG the road, not as the
+                # crow flies, so the speed is better than a chord estimate too.
+                along_km = lr["along_m"] / 1000.0
+                raw_speed = min(along_km / (dt / 3600.0), MAX_PLAUSIBLE_KMH)
+                prev = state["speed"]
+                speed = raw_speed if prev is None else (
+                    SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
+                state["speed"] = speed
+                state.update(chain=lr["chain"], anchor_lat=lat, anchor_lng=lng,
+                             anchor_ts=now, bearing=hop_bearing)
+
+                active_segments.append({
+                    "seq": _next_seq(),
+                    "bus_id": bid,
+                    "route": state.get("route", "?"),
+                    "direction": state.get("direction", ""),
+                    "path": decimate(lr["path"]),
+                    "color": color_for_speed(speed),
+                    "speed": round(speed, 1),
+                    "snapped": True,
+                    "on_line": True,
+                    "ts": now,
+                    "ts_from": now - dt,
+                    "ts_to": now,
+                    "audited": True,     # exact by construction, nothing to audit
+                })
+                _lr_counts["painted"] += 1
+                continue
+
+            # ---- fallback for a route with no published line ----
             # rolling track window that feeds the map matcher
             hist = list(state.get("history") or [])
             if not hist or (hist[-1][0], hist[-1][1]) != (state["anchor_lat"], state["anchor_lng"]):
@@ -1052,7 +1284,6 @@ async def run_cycle(
             *(match_to_road(osrm_session, osrm_sem, p["history"], p["ckey"]) for p in pending)
         )
 
-    _drop_counts["corridor"] = _drop_counts["long_chord"] = 0
     added = dropped = 0
     for p, (path, bearing, was_snapped) in zip(pending, snapped):
         if bearing is not None:
@@ -1095,11 +1326,14 @@ async def run_cycle(
         hops_dropped=dropped,
         dropped_off_corridor=_drop_counts["corridor"],
         dropped_long_chord=_drop_counts["long_chord"],
+        on_line=dict(_lr_counts),
     )
     print(
         f"[tracker] {bus_count} buses | feeds {feeds_ok}/{len(results)} ok "
         f"| +{added} segments (total {len(active_segments)}) "
-        f"| {dropped} dropped "
+        f"| {dropped} dropped | on-line {_lr_counts['painted']} "
+        f"(off {_lr_counts['offroute']}, back {_lr_counts['backwards']}, "
+        f"flip {_lr_counts['reversed']}) "
         f"| {_cycle_stats['last_cycle_seconds']}s",
         flush=True,
     )

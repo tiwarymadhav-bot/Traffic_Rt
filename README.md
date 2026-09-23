@@ -120,8 +120,8 @@ The live API is keyed by an **internal UID**, not the public bus number
 | Speed | Status | Colour |
 |---|---|---|
 | < 5 km/h | Heavy jam | red |
-| 5–15 | Moderate | orange |
-| > 15 | Fast | green |
+| 5–11 | Moderate | orange |
+| > 11 | Fast | green |
 
 Speed is an exponential moving average (α = 0.45), so colours do not flicker
 between polls.
@@ -141,7 +141,42 @@ A hop is painted only if it survives all of these:
   120° is noise, not a U-turn.
 - Jumps over 5 km start a fresh track.
 
-## Route corridors (the strongest guard)
+## How a trail is painted
+
+**Primary: linear referencing along the route's own line.**
+
+Asking a router "which road is this bus on?" cannot work where a flyover, its
+service road and a metro viaduct sit 20–40 m apart while GPS error is 30–50 m —
+every candidate inside that radius is a road, so no threshold can reject the
+wrong one. That was the cause of every trail artefact in this project.
+
+A bus is not free to be on any road: it runs one fixed published line, and
+`data/route_corridors.json` has it. So each fix is **projected onto that line**
+and the trail is the slice of the line between two projections:
+
+- the trail is exactly the route **by construction** — a service road, a wrong
+  carriageway, a cut corner or a line across a block are simply not on it;
+- distance is measured **along the road**, so the speed is better than a
+  straight-line estimate;
+- a fix more than `MAX_OFFROUTE_M` (150 m) from the line paints nothing;
+- if the chainage goes *backwards*, the bus is running the other way: the
+  opposite direction's line is tried and the bus is re-labelled. This corrects
+  the feed, which returns the same bus on both directions;
+- the search is windowed around the previous position, so a ring route (OMS
+  passes the same junction twice) cannot snap to the wrong lap;
+- no router is involved at all — no rate limits, no latency, no demo-server
+  flakiness.
+
+Measured with ±45 m of simulated GPS wander: every painted point sat **0.00 m**
+from the true road, speeds came out 12–14 km/h against a true 12, and
+consecutive segments had zero gaps.
+
+**Fallback: OSRM map matching**, used only for a route with no published line
+(currently `307A STL|down`). That path keeps the older machinery — `/match` over
+a rolling window, `/route` for long hops, the straight chord up to 350 m, the
+corridor grid check, and the post-paint audit.
+
+## Route corridors (the data behind both paths)
 
 Every tracked route has one fixed path, and the DTC site publishes it: each
 route page carries `_mapData.route_coords`, the full LineString of that
@@ -163,7 +198,10 @@ Render gets it, and redeploy. Startup logs confirm it:
 
 The backend densifies each corridor to 20 m spacing, buckets it into a ~50 m
 grid, and requires that **80 % of a painted path's points fall in that grid or
-its 3x3 neighbourhood** (so roughly 50-100 m of tolerance). A matched path that
+its 3x3 neighbourhood** (so roughly 50-100 m of tolerance). The path is sampled
+every 25 m first — a straight chord has only two points, both on the route, so
+without sampling any line cutting across a block between two on-route fixes
+would pass. A matched path that
 fails is retried as `/route`, then as the chord — and if the chord is off
 corridor too, nothing is painted and `hops_dropped` counts it.
 
@@ -207,7 +245,9 @@ Writes `data/delhi_roads_major.geojson` (overlay used by the dashboard's
 `POLL_INTERVAL`, `DTC_CONCURRENCY`, `OSRM_CONCURRENCY`, `SEGMENT_TTL`,
 `MAX_SEGMENTS`, `MIN_MOVE_M`, `MAX_JUMP_KM`, `MAX_PLAUSIBLE_KMH`, `SPEED_ALPHA`,
 `MATCH_WINDOW`, `MATCH_RADIUS_M`, `MAX_LEG_RATIO_SHORT/LONG`, `MAX_CROSS_TRACK_M`,
-`CORRIDOR_CELL_DEG`, `CORRIDOR_STEP_M`, `CORRIDOR_MIN_INSIDE`.
+`CORRIDOR_CELL_M`, `CORRIDOR_STEP_M`, `CORRIDOR_MIN_INSIDE`, `JAM_BELOW_KMH`,
+`MAX_OFFROUTE_M`, `FAST_ABOVE_KMH` (most of these are also env vars, so they can be changed on a
+running deploy without a code push).
 
 ## Diagnostics
 

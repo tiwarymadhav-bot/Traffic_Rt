@@ -24,6 +24,7 @@ so later runs need one request per route instead of several.
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -33,6 +34,10 @@ import requests
 
 BASE = "https://www.dtcbusroutes.in"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": BASE + "/"}
+
+OSRM_ROUTE = "https://router.project-osrm.org/route/v1/driving/"
+SMOOTH_GAP_M = 200.0      # a published line sometimes jumps straight over a curve
+SMOOTH_MAX_RATIO = 2.5    # reject a routed replacement that detours
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTES_FILE = os.path.join(ROOT, "backend", "routes.json")
@@ -104,6 +109,53 @@ def search_candidates(session, term):
     return out
 
 
+def _haversine_m(a, b):
+    r = math.radians
+    dlon, dlat = r(b[0] - a[0]), r(b[1] - a[1])
+    h = (math.sin(dlat / 2) ** 2
+         + math.cos(r(a[1])) * math.cos(r(b[1])) * math.sin(dlon / 2) ** 2)
+    return 2 * 6371000 * math.asin(math.sqrt(h))
+
+
+def smooth_gaps(session, coords, label=""):
+    """
+    Replace long straight jumps in the published line with the real road path.
+
+    The DTC line follows road geometry closely (median point spacing ~30 m) but
+    occasionally leaps several hundred metres in one straight segment. A trail
+    painted along such a leap cuts the corner, so each gap is routed once, here,
+    and the result is baked into the corridor file. Done offline, never at
+    request time.
+    """
+    out = [coords[0]]
+    gaps = fixed = 0
+    for a, b in zip(coords, coords[1:]):
+        gap = _haversine_m(a, b)
+        if gap <= SMOOTH_GAP_M:
+            out.append(b)
+            continue
+        gaps += 1
+        try:
+            url = f"{OSRM_ROUTE}{a[0]},{a[1]};{b[0]},{b[1]}"
+            r = session.get(url, params={"overview": "full", "geometries": "geojson"},
+                            timeout=25)
+            data = r.json() if r.status_code == 200 else {}
+            route = (data.get("routes") or [{}])[0]
+            geom = (route.get("geometry") or {}).get("coordinates") or []
+            if len(geom) >= 2 and route.get("distance", 0) <= gap * SMOOTH_MAX_RATIO:
+                for pt in geom[1:-1]:
+                    out.append([round(pt[0], 5), round(pt[1], 5)])
+                fixed += 1
+        except Exception:
+            pass
+        out.append(b)
+        time.sleep(0.25)
+    if gaps:
+        print(f"     gaps > {SMOOTH_GAP_M:.0f} m: {gaps}, routed: {fixed}"
+              f"  ({len(coords)} -> {len(out)} points)  {label}")
+    return out
+
+
 def tidy(coords):
     """Round and drop consecutive duplicates - the site repeats points a lot."""
     out = []
@@ -171,6 +223,9 @@ def main():
             print(f"  !! {key:<18} page had no route_coords")
             miss += 1
             continue
+
+        if not args.no_smooth:
+            coords = tidy(smooth_gaps(session, coords, key))
 
         row["sid"] = sid
         corridors[key] = coords
