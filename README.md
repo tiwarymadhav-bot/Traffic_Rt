@@ -126,6 +126,47 @@ The live API is keyed by an **internal UID**, not the public bus number
 Speed is an exponential moving average (α = 0.45), so colours do not flicker
 between polls.
 
+### Stop dwell is not a jam
+
+A bus standing at a stop is doing its job, not sitting in traffic. Left alone,
+that dwell lands in the next hop's duration and paints the stretch deep red, so
+every bus stop grows a red blob.
+
+`data/route_stops.json` (built by the same tool as the corridors) holds every
+stop of every route. Each one is projected onto its route line once at startup,
+so the backend knows the chainage of every stop, and which two are the
+terminals. Then, when a bus makes no paintable move:
+
+- **at an ordinary stop** (within `STOP_RADIUS_M`, 60 m) - only the first
+  `DWELL_GRACE_SEC` (45 s) is *banked* as dwell, and the smoothed speed is left
+  alone for that long, so the bus does not fade to red while passengers board.
+  When it pulls away, the hop's speed is `distance / (elapsed - dwell)`: the
+  speed it did **on the road**;
+- **still standing at that stop after the grace period** - a bus does not need
+  three minutes to load. The stop itself is jammed, so every second beyond the
+  grace counts as congestion exactly like open road, and the stretch paints red.
+  This is the case that matters: **a real jam at a stop is still a jam**, only
+  the boarding part of it is excused;
+- **at a terminal** (first or last stop, within `TERMINAL_RADIUS_M`) - a layover
+  between trips, never traffic. The clock simply restarts, so the departure is
+  not painted as a phantom jam stretching back to the arrival;
+- **anywhere else** - congestion. The clock keeps running and the speed bleeds
+  towards zero, which is what paints a real jam red.
+
+One more guard: the moving time can never be shorter than one poll gap, so a bus
+that stood for most of the window and pulled away at the end cannot report an
+absurd speed.
+
+Without the file nothing breaks - dwell simply counts as jam time, as it did
+before.
+
+| situation | painted as |
+|---|---|
+| boarding 30 s, then 250 m | fast |
+| **jam at a stop, 3 min, then 60 m** | **heavy jam** |
+| jam on open road, 3 min, then 60 m | heavy jam |
+| 20 min terminal layover | nothing (clock restarts) |
+
 ## Noise filtering
 
 A hop is painted only if it survives all of these:
@@ -189,11 +230,15 @@ python tools/build_route_corridors.py --only 463 473
 python tools/build_route_corridors.py --refresh   # re-resolve cached sids
 ```
 
-Then commit `data/route_corridors.json` (it is deliberately NOT gitignored) so
-Render gets it, and redeploy. Startup logs confirm it:
+The same run also writes `data/route_stops.json` - every stop of every route,
+used to tell a bus stop apart from a jam (see above).
+
+Then commit **both** files (they are deliberately NOT gitignored) so Render gets
+them, and redeploy. Startup logs confirm it:
 
 ```
-[corridor] 47 corridors loaded (18420 points, 41003 cells)
+[corridor] 46 corridors loaded (20013 points, 28607 cells); 46 usable as route lines
+[stops] 1180 stops placed on 46 route lines (0 too far from their line, ignored)
 ```
 
 The backend densifies each corridor to 20 m spacing, buckets it into a ~50 m
@@ -246,7 +291,9 @@ Writes `data/delhi_roads_major.geojson` (overlay used by the dashboard's
 `MAX_SEGMENTS`, `MIN_MOVE_M`, `MAX_JUMP_KM`, `MAX_PLAUSIBLE_KMH`, `SPEED_ALPHA`,
 `MATCH_WINDOW`, `MATCH_RADIUS_M`, `MAX_LEG_RATIO_SHORT/LONG`, `MAX_CROSS_TRACK_M`,
 `CORRIDOR_CELL_M`, `CORRIDOR_STEP_M`, `CORRIDOR_MIN_INSIDE`, `JAM_BELOW_KMH`,
-`MAX_OFFROUTE_M`, `FAST_ABOVE_KMH` (most of these are also env vars, so they can be changed on a
+`MAX_OFFROUTE_M`, `FAST_ABOVE_KMH`, `STOP_RADIUS_M`, `DWELL_GRACE_SEC`,
+`TERMINAL_RADIUS_M`
+(most of these are also env vars, so they can be changed on a
 running deploy without a code push).
 
 ## Diagnostics

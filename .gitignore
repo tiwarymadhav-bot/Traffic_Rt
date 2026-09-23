@@ -25,5 +25,6 @@ backup_*/
 Thumbs.db
 *.log
 
-# the route corridors ARE tracked - the backend needs them on Render
+# the route corridors and stop list ARE tracked - the backend needs them on Render
 !data/route_corridors.json
+!data/route_stops.json

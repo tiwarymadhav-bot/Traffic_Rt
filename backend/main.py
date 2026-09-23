@@ -47,6 +47,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 ROUTES_FILE = os.path.join(BASE_DIR, "routes.json")
 CORRIDOR_FILE = os.path.join(ROOT_DIR, "data", "route_corridors.json")
+STOPS_FILE = os.path.join(ROOT_DIR, "data", "route_stops.json")
 FRONTEND_INDEX = os.path.join(ROOT_DIR, "frontend", "index.html")
 
 DTC_HOME = "https://www.dtcbusroutes.in/"
@@ -235,6 +236,54 @@ def load_corridors() -> None:
     print(f"[corridor] {len(built)} corridors loaded "
           f"({points} points, {sum(len(c) for c in built.values())} cells); "
           f"{len(CORRIDOR_LINES)} usable as route lines")
+    load_stops()
+
+
+def load_stops() -> None:
+    """
+    Read data/route_stops.json and place every stop on its route line.
+
+    A bus standing at a stop is not congestion - it is doing its job. Without
+    this list that dwell time lands in the next hop's duration and paints the
+    stretch deep red, so every bus stop looks like a jam. With it, the dwell is
+    banked and subtracted, and only time lost *away* from a stop counts as
+    traffic. Missing file: everything behaves as before.
+    """
+    ROUTE_STOP_CHAINS.clear()
+    if not os.path.exists(STOPS_FILE):
+        print("[stops] data/route_stops.json not found - stop dwell counts as jam "
+              "time (build it with tools/build_route_corridors.py)")
+        return
+    try:
+        with open(STOPS_FILE, "r", encoding="utf-8-sig") as fh:
+            raw = json.load(fh)
+    except Exception as exc:
+        print(f"[stops] FAILED to read stops: {exc}")
+        return
+    total = far = 0
+    for key, pts in raw.items():
+        line = CORRIDOR_LINES.get(key)
+        if not line or not isinstance(pts, list):
+            continue
+        chains = []
+        for p in pts:
+            try:
+                lon, lat = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            off, chain = project_on_line(line, lat, lon)
+            if off <= STOP_SNAP_M:
+                chains.append(chain)
+            else:
+                far += 1
+        if chains:
+            chains.sort()
+            ROUTE_STOP_CHAINS[key] = chains
+            total += len(chains)
+    print(f"[stops] {total} stops placed on {len(ROUTE_STOP_CHAINS)} route lines "
+          f"({far} too far from their line, ignored); up to "
+          f"{DWELL_GRACE_SEC:.0f} s within {STOP_RADIUS_M:.0f} m of a stop counts "
+          f"as boarding, anything longer counts as jam")
 
 
 def _densify(path: List[List[float]], step_m: float = 25.0) -> List[List[float]]:
@@ -295,11 +344,18 @@ def corridor_ok(key: str, path: List[List[float]]) -> bool:
 # travelled is measured along the road too, which makes the speed better than a
 # straight-line estimate.
 
-MAX_OFFROUTE_M = _env_float("MAX_OFFROUTE_M", 150.0)  # fix further than this: not on route
+MAX_OFFROUTE_M = _env_float("MAX_OFFROUTE_M", 150.0)
+STOP_RADIUS_M = _env_float("STOP_RADIUS_M", 60.0)     # dwell zone around a stop
+DWELL_GRACE_SEC = _env_float("DWELL_GRACE_SEC", 45.0) # plausible boarding time; past
+                                                      # this a stop is genuinely jammed
+TERMINAL_RADIUS_M = _env_float("TERMINAL_RADIUS_M", 150.0)  # layover zone at each end
+STOP_SNAP_M = 120.0          # a stop further than this from its own line is bad data
+MIN_HOP_SEC = 5.0            # floor for the moving time, so speed cannot blow up  # fix further than this: not on route
 BACKWARD_TOL_M = 30.0        # small negative progress is GPS noise, not reversing
 PROJECT_WINDOW_M = 2500.0    # search window around the previous position on the line
 
-CORRIDOR_LINES: Dict[str, dict] = {}   # key -> {"pts": [(lat,lon)], "cum": [metres]}
+CORRIDOR_LINES: Dict[str, dict] = {}
+ROUTE_STOP_CHAINS: Dict[str, List[float]] = {}   # key -> sorted stop chainages   # key -> {"pts": [(lat,lon)], "cum": [metres]}
 
 
 def _build_line(coords: List[List[float]]) -> Optional[dict]:
@@ -438,6 +494,74 @@ def corridor_hop(route: str, direction: str, state: dict,
     }
 
 
+def stop_zone(key: str, chain: Optional[float]) -> Optional[str]:
+    """
+    What kind of stop, if any, is this chainage sitting at?
+
+    "terminal" - the first or last stop of the route. A bus waits there between
+    trips, for as long as the schedule says; that is never traffic.
+    "stop"     - an ordinary passenger stop.
+    None       - open road.
+    """
+    if chain is None:
+        return None
+    chains = ROUTE_STOP_CHAINS.get(key)
+    if not chains:
+        return None
+    line = CORRIDOR_LINES.get(key)
+    end = line["cum"][-1] if line else chains[-1]
+    if chain <= max(chains[0], 0.0) + TERMINAL_RADIUS_M or \
+       chain >= min(chains[-1], end) - TERMINAL_RADIUS_M:
+        return "terminal"
+    import bisect
+    i = bisect.bisect_left(chains, chain)
+    for j in (i - 1, i):
+        if 0 <= j < len(chains) and abs(chains[j] - chain) <= STOP_RADIUS_M:
+            return "stop"
+    return None
+
+
+def _hold(state: dict, now: float, prev_seen: float) -> None:
+    """
+    The bus made no paintable move this poll. Decide what that silence means.
+
+    At a stop it is dwell - passengers boarding - so the time is banked and
+    later subtracted from the hop, and the smoothed speed is left alone so the
+    bus does not fade to red while it waits. Anywhere else it IS congestion, so
+    the clock keeps running and the speed bleeds towards zero, which is what
+    makes a real jam paint red.
+    """
+    key = f"{state.get('route')}|{state.get('direction')}"
+    gap = max(0.0, now - prev_seen)
+    zone = stop_zone(key, state.get("chain"))
+
+    if zone == "terminal":
+        # A layover between trips. Restart the clock at the current fix, so the
+        # departure is never painted as a jam stretching back to the arrival.
+        state.update(anchor_lat=state["lat"], anchor_lng=state["lng"],
+                     anchor_ts=now, dwell=0.0)
+        _lr_counts["dwell"] += 1
+        return
+
+    if zone == "stop":
+        # Only a plausible boarding time is forgiven. A bus does not need three
+        # minutes to let passengers on - if it is still standing after the grace
+        # period, the stop itself is jammed, and the surplus counts as
+        # congestion exactly like anywhere else. So a real jam AT a stop still
+        # paints red; only the boarding part of it is excused.
+        banked = state.get("dwell", 0.0)
+        room = max(0.0, DWELL_GRACE_SEC - banked)
+        if room > 0.0:
+            state["dwell"] = banked + min(gap, room)
+            _lr_counts["dwell"] += 1
+            if gap <= room:
+                return
+        _lr_counts["stop_jam"] += 1
+
+    if state.get("speed") is not None:
+        state["speed"] = state["speed"] * (1 - SPEED_ALPHA)
+
+
 def refresh_route_config() -> None:
     global ROUTE_CONFIG, UID_INFO, POLL_INTERVAL
     ROUTE_CONFIG, POLL_INTERVAL = load_route_config()
@@ -476,7 +600,8 @@ AUDIT_STATS = {"last_run": 0.0, "checked": 0, "repaired": 0, "removed": 0,
 DROP_SAMPLES: List[dict] = []
 _drop_counts = {"corridor": 0, "long_chord": 0}
 # linear-referencing outcomes this cycle
-_lr_counts = {"painted": 0, "offroute": 0, "backwards": 0, "reversed": 0}
+_lr_counts = {"painted": 0, "offroute": 0, "backwards": 0, "reversed": 0,
+              "dwell": 0, "stop_jam": 0}
 
 _dtc_session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
@@ -1124,6 +1249,7 @@ async def run_cycle(
                     recent=[(lat, lng, now)],
                     track=[(lat, lng, now)],
                     chain=None,
+                    dwell=0.0,
                 )
                 continue
             if state is None:
@@ -1135,6 +1261,7 @@ async def run_cycle(
                     "recent": [(lat, lng, now)],
                     "track": [(lat, lng, now)],
                     "chain": None,
+                    "dwell": 0.0,
                     "route": meta.get("route", bus.get("route", "?")),
                     "direction": meta.get("direction", ""),
                     "raw_route": bus.get("route", ""),
@@ -1147,6 +1274,7 @@ async def run_cycle(
             state["direction"] = meta.get("direction", state.get("direction"))
             state["raw_route"] = bus.get("route", state.get("raw_route"))
             state["uid"] = uid
+            prev_seen = state.get("seen") or now
             state["lat"], state["lng"], state["seen"] = lat, lng, now
 
             # raw fix ring buffer - every fix lands here, filtered or not
@@ -1164,19 +1292,17 @@ async def run_cycle(
             dt = now - state["anchor_ts"]
 
             if dist_m < MIN_MOVE_M:
-                # Parked / GPS shimmer: hold the anchor so noise never accumulates,
-                # but bleed the smoothed speed towards zero so the next segment
-                # correctly paints as a jam.
-                if state["speed"] is not None:
-                    state["speed"] = state["speed"] * (1 - SPEED_ALPHA)
+                # Parked / GPS shimmer: hold the anchor so noise never accumulates.
+                # _hold decides whether this silence is a stop dwell (banked) or
+                # congestion (speed bleeds towards zero, so the next hop is red).
+                _hold(state, now, prev_seen)
                 continue
 
             # Warm-up: paint nothing until the parked test has enough raw fixes,
             # otherwise a bus that is already standing still draws a star before
             # we can tell it apart from one that is moving.
             if len(state["recent"]) < RECENT_FIXES or is_wandering(state["recent"]):
-                if state["speed"] is not None:
-                    state["speed"] = state["speed"] * (1 - SPEED_ALPHA)
+                _hold(state, now, prev_seen)
                 continue
 
             # Direction reversal on a short hop is GPS noise, not a U-turn.
@@ -1185,21 +1311,31 @@ async def run_cycle(
             if prev_bearing is not None and dist_m < SHORT_NOISE_HOP_M:
                 diff = abs(hop_bearing - prev_bearing) % 360
                 if min(diff, 360 - diff) > BEARING_FLIP_DEG:
-                    if state["speed"] is not None:
-                        state["speed"] = state["speed"] * (1 - SPEED_ALPHA)
+                    _hold(state, now, prev_seen)
                     continue
 
             if dist_km > MAX_JUMP_KM or dt <= 0:
                 # real teleport: start a fresh track, do not paint across Delhi
                 state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
                              history=[(lat, lng, now)], recent=[(lat, lng, now)],
-                             track=[(lat, lng, now)], chain=None)
+                             track=[(lat, lng, now)], chain=None, dwell=0.0)
                 continue
 
             # A fix that implies a silly speed is usually a delayed update, not a
             # teleport - clamp the speed but still paint the hop, otherwise the
             # trail gets a hole.
-            raw_speed = min(dist_km / (dt / 3600.0), MAX_PLAUSIBLE_KMH)
+            # Elapsed time minus the time spent standing at stops. A bus that
+            # waited 40 s at a stop and then covered 300 m in 20 s is doing
+            # 54 km/h on the road, not 18 - and the road is what we are colouring.
+            dwell_s = min(state.get("dwell", 0.0), DWELL_GRACE_SEC)
+            # The floor is one poll gap: whatever the bus covered, it covered it
+            # in at least the interval since the last fix. Without that, a bus
+            # that stood at a stop for almost the whole window and pulled away at
+            # the end would divide its move by a couple of seconds and paint a
+            # ridiculous speed.
+            move_dt = max(dt - dwell_s, now - prev_seen, MIN_HOP_SEC)
+
+            raw_speed = min(dist_km / (move_dt / 3600.0), MAX_PLAUSIBLE_KMH)
 
             prev = state["speed"]
             speed = raw_speed if prev is None else (SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
@@ -1215,32 +1351,42 @@ async def run_cycle(
                     # movement actually agrees with and restart the track there.
                     state.update(direction=lr["direction"], chain=lr["chain"],
                                  anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
+                                 dwell=0.0,
                                  history=[(lat, lng, now)], recent=[(lat, lng, now)])
                     _lr_counts["reversed"] += 1
                     continue
 
                 if status in ("offroute", "backwards"):
                     _lr_counts[status] += 1
-                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
+                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
+                                 dwell=0.0)
                     if status == "offroute":
                         state["chain"] = None
                     continue
 
                 if status == "stationary":
-                    state["chain"] = lr.get("chain", state.get("chain"))
-                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
+                    if state.get("chain") is None:
+                        # first fix on this line - nothing to measure from yet
+                        state.update(chain=lr.get("chain"), anchor_lat=lat,
+                                     anchor_lng=lng, anchor_ts=now, dwell=0.0)
+                        continue
+                    # Hold the anchor. A bus creeping through a jam sits here poll
+                    # after poll; moving the anchor each time would throw that time
+                    # away and the jam would never paint. _hold banks it as dwell
+                    # only if the bus is standing at a stop.
+                    _hold(state, now, prev_seen)
                     continue
 
                 # status == "ok": distance measured ALONG the road, not as the
                 # crow flies, so the speed is better than a chord estimate too.
                 along_km = lr["along_m"] / 1000.0
-                raw_speed = min(along_km / (dt / 3600.0), MAX_PLAUSIBLE_KMH)
+                raw_speed = min(along_km / (move_dt / 3600.0), MAX_PLAUSIBLE_KMH)
                 prev = state["speed"]
                 speed = raw_speed if prev is None else (
                     SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
                 state["speed"] = speed
                 state.update(chain=lr["chain"], anchor_lat=lat, anchor_lng=lng,
-                             anchor_ts=now, bearing=hop_bearing)
+                             anchor_ts=now, bearing=hop_bearing, dwell=0.0)
 
                 active_segments.append({
                     "seq": _next_seq(),
@@ -1254,6 +1400,7 @@ async def run_cycle(
                     "on_line": True,
                     "ts": now,
                     "ts_from": now - dt,
+                    "dwell_s": round(dwell_s),
                     "ts_to": now,
                     "audited": True,     # exact by construction, nothing to audit
                 })
@@ -1276,7 +1423,7 @@ async def run_cycle(
                             "ckey": f"{state.get('route')}|{state.get('direction')}",
                             "hop": (hist[-2], hist[-1])})
             # anchor moves forward whether or not OSRM answers
-            state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now)
+            state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now, dwell=0.0)
 
     snapped = []
     if pending:
@@ -1333,7 +1480,8 @@ async def run_cycle(
         f"| +{added} segments (total {len(active_segments)}) "
         f"| {dropped} dropped | on-line {_lr_counts['painted']} "
         f"(off {_lr_counts['offroute']}, back {_lr_counts['backwards']}, "
-        f"flip {_lr_counts['reversed']}) "
+        f"flip {_lr_counts['reversed']}, dwell {_lr_counts['dwell']}, "
+        f"stopjam {_lr_counts['stop_jam']}) "
         f"| {_cycle_stats['last_cycle_seconds']}s",
         flush=True,
     )

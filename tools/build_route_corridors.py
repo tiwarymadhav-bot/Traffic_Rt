@@ -42,6 +42,7 @@ SMOOTH_MAX_RATIO = 2.5    # reject a routed replacement that detours
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTES_FILE = os.path.join(ROOT, "backend", "routes.json")
 OUT_FILE = os.path.join(ROOT, "data", "route_corridors.json")
+STOPS_FILE = os.path.join(ROOT, "data", "route_stops.json")
 
 UID_RE = re.compile(r"_liveBusRouteUID\s*=\s*'([^']*)'")
 
@@ -156,6 +157,61 @@ def smooth_gaps(session, coords, label=""):
     return out
 
 
+def stop_points(md, label=""):
+    """
+    Pull the stop coordinates out of `_mapData.stops` as [[lon,lat], ...].
+
+    The site is not consistent about the key names or the coordinate order, so
+    every plausible shape is accepted. Order is decided by value, not by name:
+    Delhi sits at lat ~28, lon ~77, so the larger of the two is always the
+    longitude.
+    """
+    out = []
+    for st in (md or {}).get("stops") or []:
+        a = b = None
+        if isinstance(st, dict):
+            # GeoJSON Feature - what the site actually publishes:
+            # {"type":"Feature","geometry":{"type":"Point","coordinates":[lon,lat]},
+            #  "properties":{"title":"Patparganj Industrial Area","marker-symbol":"1"}}
+            geom = st.get("geometry")
+            if isinstance(geom, dict):
+                c = geom.get("coordinates")
+                if isinstance(c, (list, tuple)) and len(c) >= 2:
+                    a, b = c[0], c[1]
+        if a is None and isinstance(st, dict):
+            for kx, ky in (("lng", "lat"), ("lon", "lat"),
+                           ("longitude", "latitude"), ("x", "y")):
+                if st.get(kx) is not None and st.get(ky) is not None:
+                    a, b = st[kx], st[ky]
+                    break
+            if a is None:
+                for k in ("coords", "coordinates", "location", "latlng", "position"):
+                    c = st.get(k)
+                    if isinstance(c, (list, tuple)) and len(c) >= 2:
+                        a, b = c[0], c[1]
+                        break
+                    if isinstance(c, dict):
+                        a = c.get("lng", c.get("lon", c.get("longitude")))
+                        b = c.get("lat", c.get("latitude"))
+                        if a is not None and b is not None:
+                            break
+        elif isinstance(st, (list, tuple)) and len(st) >= 2:
+            a, b = st[0], st[1]
+        try:
+            a, b = float(a), float(b)
+        except (TypeError, ValueError):
+            continue
+        lon, lat = (a, b) if a >= b else (b, a)
+        if not (27.0 < lat < 30.0 and 75.5 < lon < 78.5):
+            continue
+        out.append([round(lon, 5), round(lat, 5)])
+    if not out and (md or {}).get("stops"):
+        first = ((md or {}).get("stops") or [None])[0]
+        print(f"     !! could not read stop coordinates {label}; first entry looks like:"
+              f" {str(first)[:160]}")
+    return out
+
+
 def tidy(coords):
     """Round and drop consecutive duplicates - the site repeats points a lot."""
     out = []
@@ -175,6 +231,9 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="ignore cached sids")
     ap.add_argument("--no-smooth", action="store_true",
                     help="keep long straight jumps in the published line as they are")
+    ap.add_argument("--stops-only", action="store_true",
+                    help="collect stops only and leave data/route_corridors.json "
+                         "exactly as it is (no re-smoothing, much faster)")
     args = ap.parse_args()
 
     with open(ROUTES_FILE, "r", encoding="utf-8-sig") as fh:
@@ -188,6 +247,14 @@ def main():
                 corridors = json.load(fh)
         except Exception:
             corridors = {}
+
+    stops_out = {}
+    if os.path.exists(STOPS_FILE):
+        try:
+            with open(STOPS_FILE, encoding="utf-8") as fh:
+                stops_out = json.load(fh)
+        except Exception:
+            stops_out = {}
 
     session = requests.Session()
     session.get(BASE + "/", headers=HEADERS, timeout=25)
@@ -226,24 +293,40 @@ def main():
             miss += 1
             continue
 
-        if not args.no_smooth:
+        if not args.no_smooth and not args.stops_only:
             coords = tidy(smooth_gaps(session, coords, key))
 
         row["sid"] = sid
-        corridors[key] = coords
+        if not args.stops_only:
+            corridors[key] = coords
+        pts = stop_points(md, key)
+        if pts:
+            stops_out[key] = pts
         stops = len((md or {}).get("stops") or [])
-        print(f"  ok {key:<18} sid={sid:<6} {len(coords):>4} points, {stops} stops")
+        if args.stops_only:
+            print(f"  ok {key:<18} sid={sid:<6} {len(pts)}/{stops} stops")
+        else:
+            print(f"  ok {key:<18} sid={sid:<6} {len(coords):>4} points, "
+                  f"{stops} stops ({len(pts)} with coordinates)")
         ok += 1
         time.sleep(0.4)
 
     os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
     with open(OUT_FILE, "w", encoding="utf-8") as fh:
         json.dump(corridors, fh, separators=(",", ":"))
+    with open(STOPS_FILE, "w", encoding="utf-8") as fh:
+        json.dump(stops_out, fh, separators=(",", ":"))
     with open(ROUTES_FILE, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2, ensure_ascii=False)
 
     mb = os.path.getsize(OUT_FILE) / 1e6
-    print(f"\n{ok} corridors written, {miss} missing -> data/route_corridors.json ({mb:.2f} MB)")
+    if args.stops_only:
+        print(f"\ncorridors left untouched -> data/route_corridors.json ({mb:.2f} MB)")
+    else:
+        print(f"\n{ok} corridors written, {miss} missing -> "
+              f"data/route_corridors.json ({mb:.2f} MB)")
+    print(f"{sum(len(v) for v in stops_out.values())} stops on {len(stops_out)} routes "
+          f"-> data/route_stops.json  (used to tell a bus stop apart from a jam)")
     print("Commit that file so Render gets it, then restart / redeploy the backend.")
     if miss:
         print("Routes without a corridor are simply left unconstrained - nothing breaks.")
