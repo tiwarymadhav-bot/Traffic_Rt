@@ -2224,6 +2224,13 @@ async def health():
         "audit": AUDIT_STATS,
         "buses": len(last_positions),
         "segments": len(active_segments),
+        # The caps that are ACTUALLY in force, so a value set in the hosting
+        # dashboard can be told apart from the one in render.yaml. Those two
+        # disagreeing is invisible otherwise, and it silently decides how much
+        # painted road survives.
+        "max_segments": MAX_SEGMENTS,
+        "segment_ttl_s": SEGMENT_TTL,
+        "poll_interval_s": POLL_INTERVAL,
         **_cycle_stats,
     }
 
