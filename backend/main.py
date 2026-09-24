@@ -1555,17 +1555,22 @@ async def run_cycle(
                     _lr_counts["reversed"] += 1
                     continue
 
-                if status in ("offroute", "backwards"):
+                if status == "backwards":
                     _lr_counts[status] += 1
-                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
-                                 dwell=0.0)
-                    if status == "offroute":
-                        state["chain"] = None
-                        state["off_m"] = lr.get("off_m")
-                        state["off_since"] = state.get("off_since") or now
-                        record_offroute(state, bid, lat, lng,
-                                        lr.get("off_m") or 0.0, now)
+                    state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now, dwell=0.0)
                     continue
+
+                if status == "offroute":
+                    _lr_counts[status] += 1
+                    state["chain"] = None
+                    state["off_m"] = lr.get("off_m")
+                    state["off_since"] = state.get("off_since") or now
+                    off = lr.get("off_m") or 0.0
+                    record_offroute(state, bid, lat, lng, off, now)
+                    if off > 3000.0:
+                        state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now, dwell=0.0)
+                        continue
+                    # Else fall through to the OSRM fallback router to paint the diversion!
 
                 if status == "stationary":
                     if state.get("chain") is None:
@@ -1625,8 +1630,12 @@ async def run_cycle(
                         (lat, lng, now)]
             state["history"] = hist
 
+            ckey = f"{state.get('route')}|{state.get('direction')}"
+            if state.get("off_m") is not None and state["off_m"] > 100.0:
+                ckey = ""  # Allow near diversions to bypass corridor_ok rejection
+
             pending.append({"bid": bid, "state": state, "speed": speed, "history": hist,
-                            "ckey": f"{state.get('route')}|{state.get('direction')}",
+                            "ckey": ckey,
                             "hop": (hist[-2], hist[-1])})
             # anchor moves forward whether or not OSRM answers
             state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now, dwell=0.0)
