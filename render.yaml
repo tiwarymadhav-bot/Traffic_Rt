@@ -14,9 +14,10 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.6"
-      # Free instances get 512 MB RAM - keep the painted road bounded.
+      # Free instances get 512 MB RAM. Measured: 20000 painted segments hold
+      # about 35 MB, which fits alongside the corridor and stop indexes.
       - key: MAX_SEGMENTS
-        value: "6000"
+        value: "20000"
       - key: SEGMENT_TTL
         value: "10800"             # 3 hours
       - key: POLL_INTERVAL
