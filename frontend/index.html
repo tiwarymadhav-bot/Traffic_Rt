@@ -199,7 +199,9 @@ let darkMap = false;
 /* ────────────────────────────  STATE  ─────────────────────────── */
 const SYNC_MS      = 5000;     // client poll (server refreshes every ~15s)
 const TRAIL_TTL_MS = 6*60*60*1000;   // painted road stays for 6 h
-const MAX_CLIENT_SEGMENTS = 15000;
+const MAX_CLIENT_SEGMENTS = 20000;   // must not be below the server cap,
+                                     // or the browser throws away what the
+                                     // server still holds
 const MOTION_BUS_LIMIT = 900;  // above this, skip per-frame interpolation
 
 let cursor      = 0;
