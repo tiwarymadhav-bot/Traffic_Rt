@@ -78,7 +78,7 @@ POLL_INTERVAL = _env_int("POLL_INTERVAL", 15)       # seconds between full sweep
 DTC_CONCURRENCY = _env_int("DTC_CONCURRENCY", 8)    # parallel requests to the DTC API
 OSRM_CONCURRENCY = _env_int("OSRM_CONCURRENCY", 6)  # parallel requests to OSRM
 SEGMENT_TTL = _env_int("SEGMENT_TTL", 1500)         # keep painted road for 25 minutes
-MAX_SEGMENTS = _env_int("MAX_SEGMENTS", 15000)      # cap so memory / payload stay bounded
+MAX_SEGMENTS = _env_int("MAX_SEGMENTS", 16000)      # cap so memory / payload stay bounded
 MIN_MOVE_M = 18.0           # below this a "move" is GPS noise, not travel
 STATIONARY_NET_M = 35.0     # net travel over the raw-fix window below this = parked
 MIN_STRAIGHTNESS = 0.6      # net travel / path length; low = wandering on the spot
