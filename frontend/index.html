@@ -126,7 +126,10 @@
       <button class="btn"    id="btnOsm"    onclick="toggleOsm()">OSM roads</button>
       <button class="btn"    onclick="fitBuses()">Fit to buses</button>
       <button class="btn"    id="btnLoc"  onclick="locateMe()">My location</button>
-      <button class="btn"    onclick="clearTrails()">Clear trails</button>
+      <button class="btn" onclick="clearTrails()"
+              title="Hides the painted trails in this browser only. The server keeps them - press Reload trails to get them back.">Clear trails</button>
+      <button class="btn" onclick="reloadTrails()"
+              title="Fetches every trail the server still holds and repaints them.">Reload trails</button>
     </div>
 
     <div class="title">Traffic legend</div>
@@ -146,6 +149,7 @@
     </div>
     <div class="tools" style="margin-bottom:6px">
       <button class="btn" onclick="runPlan()">Show traffic</button>
+      <button class="btn on" id="btnFocus" onclick="toggleFocus()">Only this road</button>
       <button class="btn" onclick="clearPlan()">Clear</button>
     </div>
     <div id="planBox"></div>
@@ -280,11 +284,24 @@ function removeSegments(seqs){
   return n;
 }
 
+/* Clearing is a VIEW action, never a delete. The trails live on the server and
+   only age out there on their own TTL; all this does is stop drawing them in
+   this browser. Because the sync cursor keeps moving, they would not come back
+   by themselves - so reloadTrails() rewinds the cursor to 0 and asks the server
+   for everything it still holds. Nothing the person clicks here can destroy
+   data. */
 function clearTrails(){
   for (const [, s] of segments) groups.get(s.key)?.seg.removeLayer(s.layer);
   segments.clear();
   document.getElementById('sSegs').textContent = '0';
   document.getElementById('hSegs').textContent = '0';
+}
+
+async function reloadTrails(){
+  for (const [, s] of segments) groups.get(s.key)?.seg.removeLayer(s.layer);
+  segments.clear();
+  cursor = 0;                 // rewind: the next sync returns the full history
+  await sync();
 }
 
 /* ─────────────────────────────  BUSES  ────────────────────────── */
@@ -509,6 +526,33 @@ async function toggleOsm(){
 let planLayer = L.layerGroup().addTo(map);
 let ptA = null, ptB = null, pickMode = null, aMark = null, bMark = null;
 
+/* Focus mode: while a plan is on the map, every other route's trails and buses
+   are hidden so the chosen road stands alone. What was visible before is
+   remembered and put back on Clear, or when focus is switched off - the route
+   filter the person had set is theirs, not ours to discard. */
+let focusOn = true, savedVis = null;
+
+function applyFocus(){
+  if (focusOn && planShown){
+    if (savedVis === null){
+      savedVis = new Map([...groups].map(([k, g]) => [k, g.visible]));
+    }
+    for (const k of groups.keys()) setGroupVisible(k, false);
+  } else if (savedVis !== null){
+    for (const [k, v] of savedVis) setGroupVisible(k, v);
+    savedVis = null;
+  }
+  renderRouteList();
+}
+
+function toggleFocus(){
+  focusOn = !focusOn;
+  document.getElementById('btnFocus').classList.toggle('on', focusOn);
+  applyFocus();
+}
+
+let planShown = false;
+
 function armPick(which){
   pickMode = which;
   document.getElementById('pickHint').textContent = ' — now click the map';
@@ -561,6 +605,8 @@ async function resolveBox(which){
 function clearPlan(){
   planLayer.clearLayers();
   document.getElementById('planBox').innerHTML = '';
+  planShown = false;
+  applyFocus();
 }
 
 async function runPlan(){
@@ -581,6 +627,8 @@ async function runPlan(){
   if (!d.ok){ box.innerHTML = `<div class="none">${d.reason}</div>`; return; }
 
   planLayer.clearLayers();
+  planShown = true;
+  applyFocus();
   const bounds = [];
   for (const seg of d.segments){
     const ll = seg.path.map(p => [p[1], p[0]]);
@@ -595,6 +643,15 @@ async function runPlan(){
        .bindPopup('no live data on this stretch')
        .addTo(planLayer);
     }
+  }
+  for (const b of d.buses_on_path){
+    L.circleMarker([b.lat, b.lng], {radius:5, weight:2, color:'#0b1220',
+        fillColor:'#ffffff', fillOpacity:1})
+     .bindPopup(`<b>Route ${b.route}</b> ${(b.direction||'').toUpperCase()}<br>` +
+                `Bus: ${b.bus_id}<br>` +
+                (b.speed !== null ? `Speed: <b>${b.speed} km/h</b><br>` : '') +
+                `${b.age_s}s ago`)
+     .addTo(planLayer);
   }
   if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.12));
 

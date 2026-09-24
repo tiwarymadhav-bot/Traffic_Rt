@@ -255,6 +255,21 @@ DND-KMP Expressway: it is not on route 463 at all. No bow or ratio threshold can
 work that out, because a wrong road is still a road. Routes with no corridor in
 the file are simply left unconstrained.
 
+## Nothing on the dashboard deletes data
+
+Both **Clear** buttons are view actions, and it is worth being exact about it:
+
+- **Clear** (trip planner) removes the drawn route and puts back whatever route
+  filter you had before the plan - including routes you had switched off
+  yourself. It touches no trail.
+- **Clear trails** stops drawing the painted trails *in this browser*. The
+  server still holds them. Because the sync cursor keeps advancing they would
+  not reappear on their own, so **Reload trails** rewinds the cursor to 0 and
+  asks the server for everything it still has.
+
+The only thing that actually removes a trail is the server's own ageing:
+`SEGMENT_TTL` and the `MAX_SEGMENTS` cap. No button in the UI can destroy it.
+
 ## Plan a trip (`/api/plan`)
 
 Type or click a **From** and a **To**, press *Show traffic*, and the road route
