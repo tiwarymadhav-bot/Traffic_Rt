@@ -2363,6 +2363,85 @@ async def debug_offroute(hours: float = 6.0, min_buses: int = 1,
     }
 
 
+@app.get("/api/debug/here")
+async def debug_here(lat: float, lon: float, radius_m: float = 250.0,
+                     minutes: float = 60.0):
+    """
+    Why is there no colour on this bit of road?
+
+    A blank stretch has three completely different meanings and they look
+    identical on the map, so this answers which one it is:
+
+      no corridor here   none of the tracked routes runs on this road. Blank is
+                         correct - we have nothing to say about it.
+      corridor, no bus   a route does run here, but no bus of it has passed in
+                         the window. Blank is correct and will fill in.
+      buses went off     buses came through and were more than MAX_OFFROUTE_M
+                         from their line, so nothing could be painted. THIS is
+                         the case worth acting on.
+    """
+    now = time.time()
+    cut = now - minutes * 60.0
+
+    corridors_here = []
+    ci, cj = _cell(lat, lon)
+    reach = int(radius_m / CORRIDOR_CELL_M) + 1
+    seen: Dict[str, float] = {}
+    for i in range(-reach, reach + 1):
+        for j in range(-reach, reach + 1):
+            for key, chain, slat, slon in ROAD_GRID.get((ci + i, cj + j), ()):
+                d = haversine_km(lon, lat, slon, slat) * 1000.0
+                if d <= radius_m and (key not in seen or d < seen[key]):
+                    seen[key] = d
+    for key, d in sorted(seen.items(), key=lambda kv: kv[1]):
+        corridors_here.append({"route": key, "line_is_m_away": round(d)})
+
+    painted = [s for s in active_segments
+               if s["ts"] >= cut and any(
+                   haversine_km(lon, lat, p[0], p[1]) * 1000.0 <= radius_m
+                   for p in s["path"])]
+    by_route: Dict[str, int] = {}
+    for s in painted:
+        k = f"{s['route']}|{s['direction']}"
+        by_route[k] = by_route.get(k, 0) + 1
+
+    off = [r for r in OFFROUTE_LOG
+           if r["ts"] >= cut
+           and haversine_km(lon, lat, r["lon"], r["lat"]) * 1000.0 <= radius_m]
+    off_by_route: Dict[str, dict] = {}
+    for r in off:
+        k = f"{r['route']}|{r['direction']}"
+        g = off_by_route.setdefault(k, {"fixes": 0, "buses": set(), "max_off_m": 0})
+        g["fixes"] += 1
+        g["buses"].add(r["bus_id"])
+        g["max_off_m"] = max(g["max_off_m"], r["off_m"])
+
+    if not corridors_here:
+        verdict = ("No tracked route runs on this road. Blank here is correct - "
+                   "these 58 routes are all we can see.")
+    elif off:
+        verdict = ("Buses came through and were too far from their own line to "
+                   "place, so nothing was painted. This is the case worth acting on.")
+    elif painted:
+        verdict = "There IS paint here in this window - check the trail TTL or a route filter."
+    else:
+        verdict = ("A route runs here but no bus of it has passed in the window. "
+                   "Blank is correct; it will fill in when one does.")
+
+    return {
+        "ok": True, "lat": lat, "lon": lon,
+        "radius_m": radius_m, "window_minutes": minutes,
+        "corridors_here": corridors_here,
+        "painted_segments_here": len(painted),
+        "painted_by_route": by_route,
+        "offroute_here": [
+            {"route": k, "fixes": v["fixes"], "buses": len(v["buses"]),
+             "max_off_m": v["max_off_m"]}
+            for k, v in sorted(off_by_route.items(), key=lambda kv: -kv[1]["fixes"])],
+        "verdict": verdict,
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {
