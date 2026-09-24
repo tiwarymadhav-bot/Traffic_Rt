@@ -2260,72 +2260,107 @@ async def debug_drops():
 
 @app.get("/api/debug/offroute")
 async def debug_offroute(hours: float = 6.0, min_buses: int = 1,
-                         cell_m: float = 200.0, limit: int = 40):
+                         radius_m: float = 500.0, limit: int = 40):
     """
     Where buses leave their own route line, grouped by place.
 
-    The number that decides what to do is `buses` - how many DIFFERENT buses of
-    that route left the line at this spot:
+    Two things have to be separated before any of this means anything.
 
-      1-2 buses, few fixes   a real diversion. Nothing to fix; the missing
-                             trail there is the honest answer.
-      many buses, repeatedly the published line is wrong at that place. Run
-                             tools/repair_corridors.py, or rebuild that route's
-                             corridor.
+    First, distance. A fix 200-400 m off is a bus that took a different turn,
+    or a line that is slightly wrong. A fix 1.5 km off is neither: that bus is
+    not running this route at all - it is deadheading to a depot, or the feed
+    has labelled it wrong. Lumping them together would send us "fixing" a
+    corridor because a bus went home. So they are reported in separate bands
+    and only the near band is a candidate for repair.
 
-    `share` puts it in proportion: off-route fixes here against all the fixes
-    that route painted in the same window. A route with 200 buses having 10
-    off-route fixes is fine; one with 12 buses having 40 is not.
+    Second, repetition. One bus passing once is a diversion and needs nothing.
+    The same place, many different buses, over hours, is our line being wrong.
+    That distinction needs TIME - a log ten minutes old cannot show it, and the
+    verdict says so rather than guessing.
     """
     now = time.time()
     cut = now - hours * 3600.0
     rows = [r for r in OFFROUTE_LOG if r["ts"] >= cut]
+    oldest = min((r["ts"] for r in rows), default=now)
+    log_age_min = round((now - oldest) / 60.0, 1)
+
     if not rows:
         return {"ok": True, "window_hours": hours, "fixes": 0, "places": [],
                 "note": "no bus has left its route line in this window"}
 
-    deg = cell_m / 111320.0
-    groups: Dict[Tuple, dict] = {}
+    # cluster per route, greedily, by real distance - a fixed grid split one
+    # junction into three rows just because the points straddled a cell edge
+    per_route: Dict[str, List[dict]] = {}
     for r in rows:
-        key = (r["route"], r["direction"],
-               round(r["lat"] / deg), round(r["lon"] / deg))
-        g = groups.setdefault(key, {
-            "route": r["route"], "direction": r["direction"],
-            "lat": r["lat"], "lon": r["lon"], "fixes": 0, "buses": set(),
-            "off_sum": 0.0, "off_max": 0.0, "first": r["ts"], "last": r["ts"]})
-        g["fixes"] += 1
-        g["buses"].add(r["bus_id"])
-        g["off_sum"] += r["off_m"]
-        g["off_max"] = max(g["off_max"], r["off_m"])
-        g["first"] = min(g["first"], r["ts"])
-        g["last"] = max(g["last"], r["ts"])
+        per_route.setdefault(f"{r['route']}|{r['direction']}", []).append(r)
 
-    per_route: Dict[str, int] = {}
-    for r in rows:
-        k = f"{r['route']}|{r['direction']}"
-        per_route[k] = per_route.get(k, 0) + 1
+    places = []
+    for key, rs in per_route.items():
+        rs.sort(key=lambda r: r["ts"])
+        clusters: List[dict] = []
+        for r in rs:
+            for c in clusters:
+                if haversine_km(c["lon"], c["lat"], r["lon"], r["lat"]) * 1000.0 <= radius_m:
+                    c["rows"].append(r)
+                    n = len(c["rows"])
+                    c["lat"] += (r["lat"] - c["lat"]) / n
+                    c["lon"] += (r["lon"] - c["lon"]) / n
+                    break
+            else:
+                clusters.append({"lat": r["lat"], "lon": r["lon"], "rows": [r]})
 
-    out = []
-    for g in groups.values():
-        if len(g["buses"]) < min_buses:
-            continue
-        key = f"{g['route']}|{g['direction']}"
-        out.append({
-            "route": g["route"], "direction": g["direction"],
-            "lat": g["lat"], "lon": g["lon"],
-            "map": f"https://www.openstreetmap.org/#map=18/{g['lat']}/{g['lon']}",
-            "fixes": g["fixes"], "buses": len(g["buses"]),
-            "avg_off_m": round(g["off_sum"] / g["fixes"]),
-            "max_off_m": round(g["off_max"]),
-            "minutes_spanned": round((g["last"] - g["first"]) / 60.0, 1),
-            "share_of_route_offroute": round(g["fixes"] / per_route[key], 2),
-            "verdict": ("line is probably wrong here"
-                        if len(g["buses"]) >= 5 and g["fixes"] >= 15
-                        else "looks like a diversion"),
-        })
-    out.sort(key=lambda x: (-x["buses"], -x["fixes"]))
-    return {"ok": True, "window_hours": hours, "fixes": len(rows),
-            "places": out[:limit]}
+        for c in clusters:
+            rr = c["rows"]
+            buses = {x["bus_id"] for x in rr}
+            if len(buses) < min_buses:
+                continue
+            offs = [x["off_m"] for x in rr]
+            avg = sum(offs) / len(offs)
+            span_min = (max(x["ts"] for x in rr) - min(x["ts"] for x in rr)) / 60.0
+            route, direction = key.split("|", 1)
+
+            if avg > 800:
+                band, verdict = "far", "not on this route at all (depot run, or the feed mislabelled it)"
+            elif len(buses) >= 5 and len(rr) >= 15 and span_min >= 30:
+                band, verdict = "near", "the published line is probably wrong here - worth repairing"
+            elif log_age_min < 120:
+                band, verdict = "near", f"too early to say (log is only {log_age_min:.0f} min old)"
+            else:
+                band, verdict = "near", "a diversion - nothing to fix"
+
+            places.append({
+                "route": route, "direction": direction,
+                "lat": round(c["lat"], 5), "lon": round(c["lon"], 5),
+                "map": f"https://www.openstreetmap.org/#map=17/{c['lat']:.5f}/{c['lon']:.5f}",
+                "fixes": len(rr), "buses": len(buses),
+                "avg_off_m": round(avg), "max_off_m": round(max(offs)),
+                "minutes_spanned": round(span_min, 1),
+                "band": band, "verdict": verdict,
+            })
+
+    near = [p for p in places if p["band"] == "near"]
+    far = [p for p in places if p["band"] == "far"]
+    near.sort(key=lambda p: (-p["buses"], -p["fixes"]))
+    far.sort(key=lambda p: (-p["buses"], -p["fixes"]))
+
+    return {
+        "ok": True,
+        "window_hours": hours,
+        "log_age_minutes": log_age_min,
+        "fixes": len(rows),
+        "summary": {
+            "places_near": len(near),
+            "places_far": len(far),
+            "worth_repairing": sum(1 for p in near if "probably wrong" in p["verdict"]),
+            "note": ("The log is young - repetition cannot show yet. Leave it a "
+                     "few hours before acting on anything."
+                     if log_age_min < 120 else
+                     "Act only on the places whose verdict says the line is "
+                     "probably wrong."),
+        },
+        "places": near[:limit],
+        "far_from_any_route": far[:limit],
+    }
 
 
 @app.get("/api/health")
