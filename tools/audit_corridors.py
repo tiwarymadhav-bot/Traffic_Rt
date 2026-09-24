@@ -113,6 +113,8 @@ def main():
                     help="skip the 'is this line on a motorway' test")
     ap.add_argument("--all-stops", action="store_true",
                     help="list every off stop, not just the stretches")
+    ap.add_argument("--serves", type=float, default=40.0,
+                    help="a stop further than this from its line is not served (m)")
     args = ap.parse_args()
 
     for f in (CORRIDOR_FILE, STOPS_FILE):
@@ -123,6 +125,7 @@ def main():
     stops_all = json.load(open(STOPS_FILE, encoding="utf-8-sig"))
 
     findings = []
+    served = {}
     tot_stops = tot_off = 0
     per_route = {}
 
@@ -146,6 +149,16 @@ def main():
                          "off": off, "chain": chain, "side": side})
         if not rows:
             continue
+        offs = sorted(r["off"] for r in rows)
+        back = sum(1 for a, b in zip(rows, rows[1:]) if b["chain"] < a["chain"])
+        served[key] = {
+            "stops": len(rows),
+            "median": offs[len(offs) // 2],
+            "p90": offs[min(len(offs) - 1, int(len(offs) * 0.9))],
+            "worst": offs[-1],
+            "missed": sum(1 for o in offs if o > args.serves),
+            "backwards": back,
+        }
         tot_stops += len(rows)
         off_rows = [r for r in rows if r["off"] > args.off]
         tot_off += len(off_rows)
@@ -210,7 +223,27 @@ def main():
                            "side": f["side"]})
     places.sort(key=lambda p: (-len(p["routes"]), -p["max_off_m"]))
 
-    print(f"{tot_stops} stops checked on {len(per_route)} route lines; "
+    # ---- the question that actually matters ---------------------------
+    # Does each line go where its bus goes? A bus is defined by the stops it
+    # serves, so the test is whether the line passes close to every stop, in
+    # order. Whether it does that on a flyover or under one is not the point.
+    bad = {k: v for k, v in served.items() if v["missed"] or v["backwards"]}
+    print(f"\n=== does each route line follow its own stops? ===\n")
+    print(f"{len(served) - len(bad)} of {len(served)} route lines pass every one "
+          f"of their stops within {args.serves:.0f} m, in order.\n")
+    if bad:
+        print(f"  {'route':<16}{'stops':>6}{'median':>8}{'p90':>6}{'worst':>7}"
+              f"{'missed':>8}{'out of order':>14}")
+        for k, v in sorted(bad.items(), key=lambda kv: (-kv[1]["missed"],
+                                                        -kv[1]["worst"])):
+            print(f"  {k:<16}{v['stops']:>6}{v['median']:>7.0f}m{v['p90']:>5.0f}m"
+                  f"{v['worst']:>6.0f}m{v['missed']:>8}{v['backwards']:>14}")
+        print(f"\n  'missed'       = stops further than {args.serves:.0f} m from "
+              f"the line - the bus could not stop there without leaving it.")
+        print("  'out of order' = the line reaches a later stop before an earlier "
+              "one, so the\n                   sequence doubles back.")
+
+    print(f"\n{tot_stops} stops checked on {len(per_route)} route lines; "
           f"{tot_off} sit more than {args.off:.0f} m off "
           f"({100 * tot_off / max(1, tot_stops):.1f}%)\n")
 
@@ -279,8 +312,10 @@ def main():
                                        "length_m": f["length_m"], "routes": [f["route"]]})
             mot_places.sort(key=lambda p: (-len(p["routes"]), -p["length_m"]))
 
-            print(f"\n--- corridor stretches running on a motorway "
-                  f"(a bus does not) ---\n")
+            print(f"\n--- FYI: stretches on an expressway or flyover ---")
+            print("    Not wrong by itself - some routes really do use one. It "
+                  "only matters when\n    the stops above say the line is not "
+                  "serving them.\n")
             if not mot_places:
                 print("  none - no route line uses an expressway or flyover ramp")
             for i, p in enumerate(mot_places[:20], 1):
@@ -292,8 +327,8 @@ def main():
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
-            json.dump({"places": places, "stretches": findings,
-                       "motorway": mot_places}, fh, indent=1)
+            json.dump({"served": served, "places": places,
+                       "stretches": findings, "motorway": mot_places}, fh, indent=1)
         print(f"\nwritten -> {args.json}")
     return 0
 

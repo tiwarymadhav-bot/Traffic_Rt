@@ -284,6 +284,16 @@ to replace 455 m of road. Findings are grouped by place,
 because one bad junction shows up once per route through it, and each place comes
 with an OpenStreetMap link to eyeball.
 
+The audit leads with the only question that really decides whether a corridor is
+right: **does the line pass every one of its stops, in order?** A bus is defined
+by the stops it serves, so a line that reaches them all is correct whether it does
+so on a flyover or under one. The report names each route that misses a stop
+(further than `--serves`, 40 m) or reaches a later stop before an earlier one,
+with the median and p90 offset beside it so a single odd stop is easy to tell
+apart from a line that has genuinely wandered. Ring routes such as `OMS` show
+harmless out-of-order counts, because a stop passed twice can project onto the
+wrong lap.
+
 The stop test has one blind spot, and it is the important one: **a flyover has
 no stops at all**, so the nearest stops sit comfortably before and after it, each
 close to the line, and nothing looks wrong. So there is a second test, on road

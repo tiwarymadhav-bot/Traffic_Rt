@@ -102,6 +102,7 @@
       <button class="btn"    id="btnBase"   onclick="toggleBase()">Dark map</button>
       <button class="btn"    id="btnOsm"    onclick="toggleOsm()">OSM roads</button>
       <button class="btn"    onclick="fitBuses()">Fit to buses</button>
+      <button class="btn"    id="btnLoc"  onclick="locateMe()">My location</button>
       <button class="btn"    onclick="clearTrails()">Clear trails</button>
     </div>
 
@@ -454,6 +455,67 @@ async function toggleOsm(){
   if (osmLayer.bringToBack) osmLayer.bringToBack();
   osmOn = true; btn.classList.add('on');
 }
+/* ─────────────────  MY LOCATION  ───────────────── */
+/* The browser asks the person for permission the first time, and only over
+   HTTPS - which the Render deployment is. Opening the page over plain http://
+   or file:// silently disables geolocation in every modern browser, so that
+   case is reported rather than left looking broken. */
+let meMarker = null, meCircle = null, meWatch = null;
+
+function locateMe(){
+  const btn = document.getElementById('btnLoc');
+  if (meWatch !== null){                      // second click: stop following
+    navigator.geolocation.clearWatch(meWatch);
+    meWatch = null;
+    btn.classList.remove('on');
+    btn.textContent = 'My location';
+    return;
+  }
+  if (!navigator.geolocation){
+    btn.textContent = 'no GPS support';
+    setTimeout(()=>{ btn.textContent = 'My location'; }, 3000);
+    return;
+  }
+  if (!window.isSecureContext){
+    btn.textContent = 'needs https';
+    setTimeout(()=>{ btn.textContent = 'My location'; }, 4000);
+    return;
+  }
+  btn.textContent = 'locating…';
+
+  let first = true;
+  meWatch = navigator.geolocation.watchPosition(pos => {
+    const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords;
+    if (!meMarker){
+      meCircle = L.circle([lat,lng], { radius: acc, color:'#4da3ff', weight:1,
+                                       fillColor:'#4da3ff', fillOpacity:0.12 }).addTo(map);
+      meMarker = L.circleMarker([lat,lng], { radius:6, color:'#fff', weight:2,
+                                             fillColor:'#4da3ff', fillOpacity:1 }).addTo(map);
+    } else {
+      meMarker.setLatLng([lat,lng]);
+      meCircle.setLatLng([lat,lng]).setRadius(acc);
+    }
+    meMarker.bindPopup(
+      `You are here<br>accuracy ${Math.round(acc)} m<br>` +
+      `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lng}" ` +
+      `target="_blank" rel="noopener">Open in Maps</a>`);
+    if (first){
+      map.setView([lat,lng], Math.max(map.getZoom(), 16));
+      first = false;
+      btn.textContent = 'Following you';
+      btn.classList.add('on');
+    }
+  }, err => {
+    navigator.geolocation.clearWatch(meWatch);
+    meWatch = null;
+    btn.classList.remove('on');
+    btn.textContent = err.code === err.PERMISSION_DENIED ? 'location blocked'
+                    : err.code === err.POSITION_UNAVAILABLE ? 'no fix'
+                    : 'location timed out';
+    setTimeout(()=>{ btn.textContent = 'My location'; }, 4000);
+  }, { enableHighAccuracy:true, timeout:15000, maximumAge:5000 });
+}
+
 function fitBuses(){
   const pts = [];
   for (const [,b] of buses) if (groups.get(b.key)?.visible) pts.push(b.marker.getLatLng());

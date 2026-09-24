@@ -376,6 +376,102 @@
       "from": "ISBT Anand Vihar",
       "to": "Akshardham Metro Station",
       "sid": "4555"
+    },
+    {
+      "route": "729",
+      "direction": "up",
+      "uid": "2204",
+      "from": "Mori Gate Terminal",
+      "to": "Kapashera Border",
+      "sid": "373"
+    },
+    {
+      "route": "729",
+      "direction": "down",
+      "uid": "2203",
+      "from": "Kapashera Border",
+      "to": "Mori Gate Terminal",
+      "sid": "4149"
+    },
+    {
+      "route": "764",
+      "direction": "up",
+      "uid": "2232",
+      "from": "Jharoda Kalan Border",
+      "to": "Nehru Place Terminal",
+      "sid": "384"
+    },
+    {
+      "route": "764",
+      "direction": "down",
+      "uid": "2229",
+      "from": "Nehru Place Terminal",
+      "to": "Jharoda Kalan Border",
+      "sid": "4173"
+    },
+    {
+      "route": "990",
+      "direction": "up",
+      "uid": "2561",
+      "from": "Rithala Village",
+      "to": "Shivaji Stadium Terminal",
+      "sid": "4397"
+    },
+    {
+      "route": "990",
+      "direction": "down",
+      "uid": "2564",
+      "from": "Shivaji Stadium Terminal",
+      "to": "Rithala Village",
+      "sid": "540"
+    },
+    {
+      "route": "971",
+      "direction": "up",
+      "uid": "2527",
+      "from": "Rohini Sec1 Avantika",
+      "to": "ISBT Anand Vihar Terminal",
+      "sid": "4373"
+    },
+    {
+      "route": "971",
+      "direction": "down",
+      "uid": "2530",
+      "from": "Anand Vihar ISBT",
+      "to": "Rohini Sectocr -1 Avan...",
+      "sid": "525"
+    },
+    {
+      "route": "460",
+      "direction": "up",
+      "uid": "1966",
+      "from": "Vivekanand Marg",
+      "to": "Badarpur Border",
+      "sid": "245"
+    },
+    {
+      "route": "460",
+      "direction": "down",
+      "uid": "1965",
+      "from": "Badarpur Border",
+      "to": "Vivekanand Marg",
+      "sid": "4021"
+    },
+    {
+      "route": "BADARPUR BORDER TO GURGAON",
+      "direction": "up",
+      "uid": "2589",
+      "from": "Badarpur Border",
+      "to": "Gurugram ISBT",
+      "sid": "4416"
+    },
+    {
+      "route": "GURGAON TO BADARPUR BORDER",
+      "direction": "down",
+      "uid": "2908",
+      "from": "Gurgaon",
+      "to": "Badarpur Border",
+      "sid": "4764"
     }
   ]
 }

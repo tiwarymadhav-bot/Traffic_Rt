@@ -234,6 +234,9 @@ def main():
     ap.add_argument("--stops-only", action="store_true",
                     help="collect stops only and leave data/route_corridors.json "
                          "exactly as it is (no re-smoothing, much faster)")
+    ap.add_argument("--new-only", action="store_true",
+                    help="build only the routes that have no corridor yet, so "
+                         "repairs already applied to the existing ones are kept")
     args = ap.parse_args()
 
     with open(ROUTES_FILE, "r", encoding="utf-8-sig") as fh:
@@ -259,12 +262,15 @@ def main():
     session = requests.Session()
     session.get(BASE + "/", headers=HEADERS, timeout=25)
 
-    ok = miss = 0
+    ok = miss = skipped = 0
     for row in routes:
         name, direction, uid = row["route"], row["direction"], str(row["uid"])
         if args.only and name not in args.only:
             continue
         key = f"{name}|{direction}"
+        if args.new_only and key in corridors:
+            skipped += 1
+            continue
 
         sid = None if args.refresh else row.get("sid")
         html = None
@@ -328,6 +334,9 @@ def main():
     print(f"{sum(len(v) for v in stops_out.values())} stops on {len(stops_out)} routes "
           f"-> data/route_stops.json  (used to tell a bus stop apart from a jam)")
     print("Commit that file so Render gets it, then restart / redeploy the backend.")
+    if skipped:
+        print(f"{skipped} route(s) already had a corridor and were left untouched "
+              f"(--new-only), so any repairs on them are kept.")
     if miss:
         print("Routes without a corridor are simply left unconstrained - nothing breaks.")
 
