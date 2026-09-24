@@ -137,6 +137,7 @@
     <div class="legend"><i style="background:var(--mod)"></i> Moderate 5–11 km/h</div>
     <div class="legend"><i style="background:var(--free)"></i> Fast &gt; 11 km/h</div>
     <div class="legend"><i style="width:7px;height:7px;border-radius:50%;background:#fff;border:2px solid #16204a"></i> Live bus</div>
+    <div class="legend"><i style="width:9px;height:9px;border-radius:50%;background:transparent;border:2px dashed #ffa502"></i> Bus off its route — no trail painted</div>
 
     <div class="title">Plan a trip</div>
     <input class="inp" id="fromBox" placeholder="From — type a place, or pick on map">
@@ -307,6 +308,17 @@ async function reloadTrails(){
 }
 
 /* ─────────────────────────────  BUSES  ────────────────────────── */
+/* A bus more than MAX_OFFROUTE_M from its own route line gets no trail - we
+   will not colour a road we cannot place it on. But an unmarked gap reads as
+   "no bus came this way", which is false. So the bus itself is drawn as a
+   hollow amber ring and says why in its popup: the road is uncoloured because
+   we do not know, not because it was empty. */
+function busStyle(p){
+  if (!p.offroute) return {};
+  return { radius:5, color:'#ffa502', weight:2, fillOpacity:0.15,
+           fillColor:'#ffa502' };
+}
+
 function updateBuses(fc){
   const now = performance.now();
   const seen = new Set();
@@ -320,12 +332,12 @@ function updateBuses(fc){
 
     let b = buses.get(p.bus_id);
     if (!b){
-      const marker = L.circleMarker(ll, {
+      const marker = L.circleMarker(ll, Object.assign({
         renderer, radius:3, color:'#0b1220', weight:1,
         fillColor:p.color || '#ffffff', fillOpacity:1,
         // the dot stays small on screen; the click target does not
         bubblingMouseEvents:false
-      });
+      }, busStyle(p)));
       ensureGroup(key).bus.addLayer(marker);
       b = { marker, from:ll, to:ll, t0:now, dur:SYNC_MS, key };
       buses.set(p.bus_id, b);
@@ -341,13 +353,19 @@ function updateBuses(fc){
       b.t0   = now;
       b.dur  = SYNC_MS;
       if (!animate) b.marker.setLatLng(ll);
-      b.marker.setStyle({ fillColor:p.color || '#ffffff' });
+      b.marker.setStyle(Object.assign({ fillColor:p.color || '#ffffff',
+        radius:3, color:'#0b1220', weight:1, fillOpacity:1 }, busStyle(p)));
     }
     b.marker.bindPopup(
       `<b>Route ${p.route}</b> <span style="color:#8fa3bf">${(p.direction||'').toUpperCase()}</span><br>` +
       `Bus: ${p.bus_id}<br>` +
       (p.speed !== null ? `Speed: <b style="color:${p.color}">${p.speed} km/h</b><br>` : '') +
-      `Feed: ${p.raw_route || '–'} · ${p.age}s ago`
+      `Feed: ${p.raw_route || '–'} · ${p.age}s ago` +
+      (p.offroute
+        ? `<br><span style="color:#ffa502">Off its route — ${p.off_m} m from the ` +
+          `published line${p.off_for_s ? ', for ' + Math.round(p.off_for_s/60) + ' min' : ''}.` +
+          `<br>No trail is painted here: we cannot tell which road it is on.</span>`
+        : '')
     );
   }
 
