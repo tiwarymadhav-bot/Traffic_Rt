@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -104,11 +104,11 @@
 
 <div class="header">
   <div>
-    <h1>Delhi Traffic Flow — <span>Live Bus GPS</span></h1>
+    <h1>Delhi Traffic Flow â€” <span>Live Bus GPS</span></h1>
     <div class="sub">DTC live feed***</div>
   </div>
   <div class="header-right">
-    <div class="pill"><span class="dot" id="hbDot"></span><span id="hbText">connecting…</span></div>
+    <div class="pill"><span class="dot" id="hbDot"></span><span id="hbText">connectingâ€¦</span></div>
     <div class="pill">Buses <b id="hBuses">0</b></div>
     <div class="pill">Trails <b id="hSegs">0</b></div>
   </div>
@@ -134,16 +134,16 @@
 
     <div class="title">Traffic legend</div>
     <div class="legend"><i style="background:var(--jam)"></i> Heavy jam &lt; 5 km/h</div>
-    <div class="legend"><i style="background:var(--mod)"></i> Moderate 5–11 km/h</div>
+    <div class="legend"><i style="background:var(--mod)"></i> Moderate 5â€“11 km/h</div>
     <div class="legend"><i style="background:var(--free)"></i> Fast &gt; 11 km/h</div>
     <div class="legend"><i style="width:7px;height:7px;border-radius:50%;background:#fff;border:2px solid #16204a"></i> Live bus</div>
 
     <div class="title">Plan a trip</div>
-    <input class="inp" id="fromBox" placeholder="From — type a place, or pick on map">
-    <input class="inp" id="toBox"   placeholder="To — type a place, or pick on map">
+    <input class="inp" id="fromBox" placeholder="From â€” type a place, or pick on map">
+    <input class="inp" id="toBox"   placeholder="To â€” type a place, or pick on map">
     <div class="pick">
-      pick on map: <b onclick="armPick('from')">set From</b> ·
-      <b onclick="armPick('to')">set To</b> ·
+      pick on map: <b onclick="armPick('from')">set From</b> Â·
+      <b onclick="armPick('to')">set To</b> Â·
       <b onclick="useMyLocation()">From = my location</b>
       <span id="pickHint"></span>
     </div>
@@ -172,12 +172,12 @@
     <div class="stat"><span>Active buses</span><b id="sBuses">0</b></div>
     <div class="stat"><span>Trails on map</span><b id="sSegs">0</b></div>
     <div class="stat"><span>New this sync</span><b id="sNew">0</b></div>
-    <div class="stat"><span>Audit</span><b id="sAudit">–</b></div>
-    <div class="stat"><span>Feeds OK</span><b id="sFeeds">–</b></div>
-    <div class="stat"><span>Backend cycle</span><b id="sCycle">–</b></div>
-    <div class="stat"><span>Last sync</span><b id="sSync">–</b></div>
+    <div class="stat"><span>Audit</span><b id="sAudit">â€“</b></div>
+    <div class="stat"><span>Feeds OK</span><b id="sFeeds">â€“</b></div>
+    <div class="stat"><span>Backend cycle</span><b id="sCycle">â€“</b></div>
+    <div class="stat"><span>Last sync</span><b id="sSync">â€“</b></div>
     <p class="note" style="margin-top:12px">
-      Only new trail segments are sent on each sync — the map is never redrawn from scratch,
+      Only new trail segments are sent on each sync â€” the map is never redrawn from scratch,
       so panning and zooming stay smooth even with thousands of painted segments.
       A background audit re-checks suspicious trails a minute after they are painted,
       re-matching them with wider context and removing the ones it cannot confirm.
@@ -186,17 +186,17 @@
 </div>
 
 <script>
-/* ────────────────────────────  MAP  ──────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  MAP  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const map = L.map('map', { preferCanvas:true, zoomControl:true }).setView([28.63,77.225], 12);
 const renderer = L.canvas({ padding:0.4 });
 
 /* Plain OpenStreetMap tiles - no API key, no watermark.
    "Dark map" just inverts the tile pane via CSS (see .darkmap above). */
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-  { attribution:'© OpenStreetMap contributors', maxZoom:19, crossOrigin:true }).addTo(map);
+  { attribution:'Â© OpenStreetMap contributors', maxZoom:19, crossOrigin:true }).addTo(map);
 let darkMap = false;
 
-/* ────────────────────────────  STATE  ─────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  STATE  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const SYNC_MS      = 5000;     // client poll (server refreshes every ~15s)
 const TRAIL_TTL_MS = 6*60*60*1000;   // painted road stays for 6 h
 const MAX_CLIENT_SEGMENTS = 15000;
@@ -210,7 +210,7 @@ let routeMeta   = new Map();   // "route|dir" -> {route, direction, from, to}
 let motion = true, fade = false, lastSync = 0, animHandle = null;
 let osmLayer = null, osmOn = false, resetOpacity = false;
 
-/* ──────────────────────  ROUTE GROUP HELPERS  ─────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  ROUTE GROUP HELPERS  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 function keyOf(route, dir){ return route + '|' + (dir||''); }
 
 function ensureGroup(key){
@@ -230,7 +230,7 @@ function setGroupVisible(key, visible){
   renderRouteList();
 }
 
-/* ────────────────────────────  SEGMENTS  ──────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  SEGMENTS  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 function addSegment(f){
   const p = f.properties;
   if (segments.has(p.seq)) return;
@@ -304,7 +304,7 @@ async function reloadTrails(){
   await sync();
 }
 
-/* ─────────────────────────────  BUSES  ────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  BUSES  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 function updateBuses(fc){
   const now = performance.now();
   const seen = new Set();
@@ -345,7 +345,7 @@ function updateBuses(fc){
       `<b>Route ${p.route}</b> <span style="color:#8fa3bf">${(p.direction||'').toUpperCase()}</span><br>` +
       `Bus: ${p.bus_id}<br>` +
       (p.speed !== null ? `Speed: <b style="color:${p.color}">${p.speed} km/h</b><br>` : '') +
-      `Feed: ${p.raw_route || '–'} · ${p.age}s ago`
+      `Feed: ${p.raw_route || 'â€“'} Â· ${p.age}s ago`
     );
   }
 
@@ -371,7 +371,7 @@ function animateBuses(){
 }
 animateBuses();
 
-/* ────────────────────────────  SYNC  ──────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  SYNC  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 async function sync(){
   if (document.hidden) return;
   try{
@@ -395,7 +395,7 @@ async function sync(){
       (au.total_repaired || 0) + ' fixed / ' + (au.total_removed || 0) + ' removed';
     document.getElementById('sFeeds').textContent =
       (s.feeds_ok ?? 0) + '/' + ((s.feeds_ok ?? 0) + (s.feeds_failed ?? 0));
-    document.getElementById('sCycle').textContent = (s.last_cycle_seconds ?? '–') + 's';
+    document.getElementById('sCycle').textContent = (s.last_cycle_seconds ?? 'â€“') + 's';
     document.getElementById('sSync').textContent  = new Date().toLocaleTimeString();
     lastSync = Date.now();
     heartbeat(true);
@@ -414,7 +414,7 @@ function heartbeat(ok){
   txt.textContent = 'live';
 }
 
-/* ──────────────────────────  ROUTE LIST  ──────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  ROUTE LIST  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 async function loadRoutes(){
   try{
     const data = await (await fetch('/api/routes')).json();
@@ -424,7 +424,7 @@ async function loadRoutes(){
       ensureGroup(k);
     }
     document.getElementById('routeCount').textContent =
-      new Set(data.routes.map(r=>r.route)).size + ' routes · ' + data.routes.length + ' feeds';
+      new Set(data.routes.map(r=>r.route)).size + ' routes Â· ' + data.routes.length + ' feeds';
     renderRouteList();
   }catch(e){ console.error('routes failed', e); }
 }
@@ -452,7 +452,7 @@ function renderRouteList(){
         const k = dirs[d];
         const on = groups.get(k)?.visible;
         const m  = routeMeta.get(k);
-        return `<button class="dirbtn ${on?'on':''}" title="${(m.from||'')} → ${(m.to||'')}"
+        return `<button class="dirbtn ${on?'on':''}" title="${(m.from||'')} â†’ ${(m.to||'')}"
                  onclick="toggleKey('${k.replace(/'/g,"\\'")}')">${d==='up'?'UP':'DN'}</button>`;
       }).join('')}
       <span class="cnt">${total} bus</span>
@@ -467,7 +467,7 @@ function setAllDir(dir){
   for (const [k, r] of routeMeta) setGroupVisible(k, r.direction === dir);
 }
 
-/* ────────────────────────────  UI  ────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  UI  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 function togglePanel(){
   const side = document.getElementById('side'), btn = document.getElementById('toggleBtn');
   side.classList.toggle('collapsed');
@@ -499,7 +499,7 @@ async function toggleOsm(){
     map.removeLayer(osmLayer); osmOn = false; btn.classList.remove('on'); return;
   }
   if (!osmLayer){
-    btn.textContent = 'loading…';
+    btn.textContent = 'loadingâ€¦';
     try{
       const res = await fetch('/api/osm_roads?layer=major');
       if (!res.ok){
@@ -517,7 +517,7 @@ async function toggleOsm(){
   if (osmLayer.bringToBack) osmLayer.bringToBack();
   osmOn = true; btn.classList.add('on');
 }
-/* ─────────────────  TRIP PLANNER  ───────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  TRIP PLANNER  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* The route comes from the router; the colours come only from road we have
    actually measured. A piece of the trip with no corridor of ours on it, or one
    with no recent bus, is drawn as a grey dashed line and counted as unknown -
@@ -555,7 +555,7 @@ let planShown = false;
 
 function armPick(which){
   pickMode = which;
-  document.getElementById('pickHint').textContent = ' — now click the map';
+  document.getElementById('pickHint').textContent = ' â€” now click the map';
 }
 
 map.on('click', e => {
@@ -583,7 +583,7 @@ function setPoint(which, lat, lng, label){
 
 function useMyLocation(){
   if (myPos){ setPoint('from', myPos[0], myPos[1], 'My location'); return; }
-  document.getElementById('pickHint').textContent = ' — press My location first';
+  document.getElementById('pickHint').textContent = ' â€” press My location first';
   setTimeout(()=>{ document.getElementById('pickHint').textContent=''; }, 4000);
 }
 
@@ -611,7 +611,7 @@ function clearPlan(){
 
 async function runPlan(){
   const box = document.getElementById('planBox');
-  box.innerHTML = '<div class="none">working…</div>';
+  box.innerHTML = '<div class="none">workingâ€¦</div>';
   const a = await resolveBox('from'), b = await resolveBox('to');
   if (!a || a.error || !b || b.error){
     box.innerHTML = `<div class="none">${(a&&a.error) || (b&&b.error) ||
@@ -635,7 +635,7 @@ async function runPlan(){
     ll.forEach(p => bounds.push(p));
     if (seg.live){
       L.polyline(ll, {color: seg.color, weight: 7, opacity: 0.95})
-       .bindPopup(`${seg.speed} km/h — measured on ${seg.route}`)
+       .bindPopup(`${seg.speed} km/h â€” measured on ${seg.route}`)
        .addTo(planLayer);
     } else {
       L.polyline(ll, {color: '#7f8c9b', weight: 4, opacity: 0.55,
@@ -664,7 +664,7 @@ async function runPlan(){
   const bus = d.buses_on_path.length
       ? d.buses_on_path.map(b => `<div class="arr">
           <span class="rt">${b.route}</span>
-          <span>${b.direction}${b.speed !== null ? ' · ' + b.speed + ' km/h' : ''}</span>
+          <span>${b.direction}${b.speed !== null ? ' Â· ' + b.speed + ' km/h' : ''}</span>
           <span class="in" style="font-weight:400;color:var(--muted)">${b.age_s}s ago</span>
         </div>`).join('')
       : '<div class="none">no tracked bus on this road right now</div>';
@@ -674,17 +674,17 @@ async function runPlan(){
       <h4>${d.distance_km} km by road</h4>
       <div class="walk">router estimate ${d.router_minutes} min` +
       (d.measured_minutes !== null
-        ? ` · measured part ${d.measured_minutes} min` : '') + `</div>
+        ? ` Â· measured part ${d.measured_minutes} min` : '') + `</div>
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="walk"><b style="color:#e6eefc">${pct}%</b> of this route has live
         traffic from our buses (${d.covered_km} km). The other
-        ${d.unknown_km} km is drawn grey — we have no data there, so no colour.</div>
+        ${d.unknown_km} km is drawn grey â€” we have no data there, so no colour.</div>
     </div>
     <div class="stop"><h4>Jams on the measured part</h4>${jam}</div>
     <div class="stop"><h4>Buses on this road now</h4>${bus}</div>`;
 }
 
-/* ─────────────────  ARRIVALS NEAR ME  ───────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  ARRIVALS NEAR ME  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* The backend measures the distance from each live bus to the stop ALONG its
    own route line and integrates the live speeds on that stretch, so a jam in
    between pushes the time out. Each arrival carries how much of that stretch
@@ -714,15 +714,21 @@ async function refreshEta(){
       return;
     }
     box.innerHTML = d.stops.map(g => {
-      const rows = g.arrivals.length
-        ? g.arrivals.map(a => `
-            <div class="arr">
-              <span class="rt">${a.route}</span>
-              <span>${a.away_m < 1000 ? a.away_m + ' m' : (a.away_m/1000).toFixed(1) + ' km'}
-                    away${a.speed !== null ? ' · ' + a.speed + ' km/h' : ''}</span>
-              <span class="q ${a.quality}">${a.quality}</span>
-              <span class="in">${fmtEta(a.eta_s)}</span>
-            </div>`).join('')
+            const rows = g.arrivals.length
+          ? g.arrivals.map(a => {
+              const meta = routeMeta.get(a.route + '|' + a.direction);
+              const dirLabel = meta && meta.to ? `<span style="display:block;font-size:9.5px;color:#a0a0a0;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:145px;" title="${meta.to}">to ${meta.to}</span>` : '';
+              return `
+              <div class="arr">
+                <span class="rt" title="${a.direction}">${a.route}</span>
+                <div style="display:flex; flex-direction:column; justify-content:center;">
+                  ${dirLabel}
+                  <span>${a.away_m < 1000 ? a.away_m + ' m' : (a.away_m/1000).toFixed(1) + ' km'} away${a.speed !== null ? ' &bull; ' + a.speed + ' km/h' : ''}</span>
+                </div>
+                <span class="q ${a.quality}">${a.quality}</span>
+                <span class="in">${fmtEta(a.eta_s)}</span>
+              </div>`;
+            }).join('')
         : '<div class="none">no tracked bus on the way</div>';
       return `<div class="stop"><h4>${g.name}</h4>
                 <div class="walk">${g.walk_m} m from you</div>${rows}</div>`;
@@ -734,7 +740,7 @@ async function refreshEta(){
   }
 }
 
-/* ─────────────────  MY LOCATION  ───────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  MY LOCATION  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* The browser asks the person for permission the first time, and only over
    HTTPS - which the Render deployment is. Opening the page over plain http://
    or file:// silently disables geolocation in every modern browser, so that
@@ -761,7 +767,7 @@ function locateMe(){
     setTimeout(()=>{ btn.textContent = 'My location'; }, 4000);
     return;
   }
-  btn.textContent = 'locating…';
+  btn.textContent = 'locatingâ€¦';
 
   let first = true;
   meWatch = navigator.geolocation.watchPosition(pos => {
@@ -813,7 +819,7 @@ function fitBuses(){
 
 document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) sync(); });
 
-/* ──────────────────────────  BOOT  ────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  BOOT  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 loadRoutes();
 sync();
 setInterval(sync, SYNC_MS);
@@ -822,3 +828,4 @@ setInterval(loadRoutes, 300000);
 </script>
 </body>
 </html>
+
