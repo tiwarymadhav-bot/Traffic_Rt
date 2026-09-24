@@ -1585,38 +1585,39 @@ async def run_cycle(
                     _hold(state, now, prev_seen)
                     continue
 
-                # status == "ok": distance measured ALONG the road, not as the
-                # crow flies, so the speed is better than a chord estimate too.
-                along_km = lr["along_m"] / 1000.0
-                raw_speed = min(along_km / (move_dt / 3600.0), MAX_PLAUSIBLE_KMH)
-                prev = state["speed"]
-                speed = raw_speed if prev is None else (
-                    SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
-                state["speed"] = speed
-                state.update(chain=lr["chain"], anchor_lat=lat, anchor_lng=lng,
-                             anchor_ts=now, bearing=hop_bearing, dwell=0.0,
-                             off_m=None, off_since=None)
+                if status == "ok":
+                    # distance measured ALONG the road, not as the
+                    # crow flies, so the speed is better than a chord estimate too.
+                    along_km = lr["along_m"] / 1000.0
+                    raw_speed = min(along_km / (move_dt / 3600.0), MAX_PLAUSIBLE_KMH)
+                    prev = state["speed"]
+                    speed = raw_speed if prev is None else (
+                        SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
+                    state["speed"] = speed
+                    state.update(chain=lr["chain"], anchor_lat=lat, anchor_lng=lng,
+                                 anchor_ts=now, bearing=hop_bearing, dwell=0.0,
+                                 off_m=None, off_since=None)
 
-                active_segments.append({
-                    "seq": _next_seq(),
-                    "bus_id": bid,
-                    "route": state.get("route", "?"),
-                    "direction": state.get("direction", ""),
-                    "path": decimate(lr["path"]),
-                    "color": color_for_speed(speed),
-                    "speed": round(speed, 1),
-                    "snapped": True,
-                    "on_line": True,
-                    "ts": now,
-                    "ts_from": now - dt,
-                    "dwell_s": round(dwell_s),
-                    "ts_to": now,
-                    "audited": True,     # exact by construction, nothing to audit
-                })
-                record_speed(f"{state.get('route')}|{state.get('direction')}",
-                             lr["chain"], speed, now)
-                _lr_counts["painted"] += 1
-                continue
+                    active_segments.append({
+                        "seq": _next_seq(),
+                        "bus_id": bid,
+                        "route": state.get("route", "?"),
+                        "direction": state.get("direction", ""),
+                        "path": decimate(lr["path"]),
+                        "color": color_for_speed(speed),
+                        "speed": round(speed, 1),
+                        "snapped": True,
+                        "on_line": True,
+                        "ts": now,
+                        "ts_from": now - dt,
+                        "dwell_s": round(dwell_s),
+                        "ts_to": now,
+                        "audited": True,     # exact by construction, nothing to audit
+                    })
+                    record_speed(f"{state.get('route')}|{state.get('direction')}",
+                                 lr["chain"], speed, now)
+                    _lr_counts["painted"] += 1
+                    continue
 
             # ---- fallback for a route with no published line ----
             # rolling track window that feeds the map matcher
