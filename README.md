@@ -255,6 +255,71 @@ DND-KMP Expressway: it is not on route 463 at all. No bow or ratio threshold can
 work that out, because a wrong road is still a road. Routes with no corridor in
 the file are simply left unconstrained.
 
+## Plan a trip (`/api/plan`)
+
+Type or click a **From** and a **To**, press *Show traffic*, and the road route
+appears coloured by the traffic we have actually measured on it.
+
+The route comes from OSRM. Each ~120 m piece of it is then asked whether one of
+our 58 bus corridors passes there and what speed was last seen on it. A piece
+with an answer is drawn in its speed colour; a piece without is drawn as a **grey
+dashed line** and counted as unknown. The panel states the covered share as a
+plain number and a bar:
+
+> **58%** of this route has live traffic from our buses (7.2 km).
+> The other 5.2 km is drawn grey - we have no data there, so no colour.
+
+That honesty is the point. These 58 routes cover a useful slice of Delhi's
+arterial roads and nothing else, so most trips have stretches we know nothing
+about. Colouring them by guesswork would make the map look better and be worth
+less. For the same reason the travel time is reported twice - the router's own
+estimate, and the time implied by the speeds actually measured - rather than
+blended into one number that hides which is which.
+
+The panel also lists the jams found on the measured part (touching pieces merged
+into one jam) and every tracked bus sitting on that road right now.
+
+Place names are resolved through OpenStreetMap's Nominatim via `/api/geocode`,
+biased to the Delhi bounding box. If it is unreachable the panel says so; points
+can always be set by clicking the map instead.
+
+## When is the next bus? (`/api/eta`)
+
+The dashboard's **My location** button asks the browser where you are, then the
+panel lists the stops around you and the buses on their way to each.
+
+The arrival time is not distance divided by an average. Every painted hop already
+records where it happened along the route and how fast the bus was there, so the
+road *ahead* of a bus is walked in 250 m pieces and each piece is timed at the
+speed most recently measured near it, plus ~20 s for every stop in between. A jam
+sitting between the bus and your stop therefore pushes the time out instead of
+being averaged away. A bus that has already passed your stop is not listed.
+
+Every arrival carries how much of that stretch was actually measured:
+
+| badge | meaning |
+|---|---|
+| `live` | 60 %+ of the road ahead has a recent speed measurement |
+| `partial` | 20–60 % |
+| `estimate` | almost nothing measured - the bus's own speed, or a default |
+
+The badge is shown as it comes. Nothing is presented as measured when it was
+guessed.
+
+```
+GET /api/eta?lat=28.5721&lon=77.2601&radius=800
+```
+
+Stop **names** come from `data/route_stops.json`, which needs the third field in
+each record (`[lon, lat, name]`). A file built before that existed still works -
+the panel just shows "Unnamed stop" - so rebuild it once with:
+
+```bash
+python tools/build_route_corridors.py --stops-only
+```
+
+Tunables: `ETA_FALLBACK_KMH` (16), `ETA_STOP_DWELL_S` (20), `SPEED_TTL` (1800 s).
+
 ## Keeping the corridors honest
 
 The trail is painted straight along the corridor, so a trail on a flyover means

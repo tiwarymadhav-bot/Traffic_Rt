@@ -169,6 +169,12 @@ def stop_points(md, label=""):
     out = []
     for st in (md or {}).get("stops") or []:
         a = b = None
+        name = ""
+        if isinstance(st, dict):
+            props = st.get("properties")
+            if isinstance(props, dict):
+                name = props.get("title") or props.get("name") or ""
+            name = name or st.get("name") or st.get("title") or ""
         if isinstance(st, dict):
             # GeoJSON Feature - what the site actually publishes:
             # {"type":"Feature","geometry":{"type":"Point","coordinates":[lon,lat]},
@@ -204,7 +210,10 @@ def stop_points(md, label=""):
         lon, lat = (a, b) if a >= b else (b, a)
         if not (27.0 < lat < 30.0 and 75.5 < lon < 78.5):
             continue
-        out.append([round(lon, 5), round(lat, 5)])
+        # [lon, lat, name] - the name is what a rider recognises, so the arrival
+        # panel can say "Ashram Chowk" instead of "stop #17". Readers accept a
+        # bare [lon, lat] too, so an older file keeps working.
+        out.append([round(lon, 5), round(lat, 5), str(name).strip()])
     if not out and (md or {}).get("stops"):
         first = ((md or {}).get("stops") or [None])[0]
         print(f"     !! could not read stop coordinates {label}; first entry looks like:"

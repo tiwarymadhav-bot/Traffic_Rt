@@ -64,6 +64,29 @@
   .dirbtn.on{background:#1f4e86;border-color:#3a7fc4;color:#fff}
   .r.off{opacity:.45}
 
+  .inp{width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);
+       color:#e6eefc;font-size:11px;border-radius:6px;padding:5px 7px;margin-bottom:4px}
+  .inp::placeholder{color:#63748f}
+  .pick{font-size:10px;color:var(--muted);margin-bottom:6px}
+  .pick b{color:#7fb2ee;cursor:pointer}
+  .bar{height:7px;border-radius:4px;background:#243349;overflow:hidden;margin:6px 0 3px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .sug{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+       padding:4px 7px;font-size:11px;cursor:pointer;margin-bottom:3px;color:#cfe0f5}
+  .sug:hover{background:#26324a}
+  .stop{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+        padding:7px 8px;margin-bottom:6px}
+  .stop h4{margin:0 0 1px;font-size:12px;color:#e6eefc;font-weight:600}
+  .stop .walk{font-size:10px;color:var(--muted)}
+  .arr{display:flex;align-items:center;gap:6px;font-size:11px;margin-top:5px}
+  .arr .rt{background:#1b3a63;border:1px solid #2f6bb0;color:#cfe4ff;border-radius:4px;
+           padding:1px 5px;font-weight:600;min-width:46px;text-align:center}
+  .arr .in{margin-left:auto;font-weight:700;color:#e6eefc}
+  .arr .q{font-size:9px;padding:0 4px;border-radius:3px;border:1px solid var(--line);
+          color:var(--muted)}
+  .arr .q.live{color:#2ed573;border-color:#2b6b45}
+  .arr .q.partial{color:#ffa502;border-color:#7a5a1e}
+  .none{font-size:11px;color:var(--muted);padding:2px 0}
   .stat{display:flex;justify-content:space-between;font-size:12px;color:#b6c6da;margin-bottom:5px}
   .stat b{color:var(--accent)}
   .note{font-size:11px;color:#7a8ba3;line-height:1.55}
@@ -111,6 +134,26 @@
     <div class="legend"><i style="background:var(--mod)"></i> Moderate 5–11 km/h</div>
     <div class="legend"><i style="background:var(--free)"></i> Fast &gt; 11 km/h</div>
     <div class="legend"><i style="width:7px;height:7px;border-radius:50%;background:#fff;border:2px solid #16204a"></i> Live bus</div>
+
+    <div class="title">Plan a trip</div>
+    <input class="inp" id="fromBox" placeholder="From — type a place, or pick on map">
+    <input class="inp" id="toBox"   placeholder="To — type a place, or pick on map">
+    <div class="pick">
+      pick on map: <b onclick="armPick('from')">set From</b> ·
+      <b onclick="armPick('to')">set To</b> ·
+      <b onclick="useMyLocation()">From = my location</b>
+      <span id="pickHint"></span>
+    </div>
+    <div class="tools" style="margin-bottom:6px">
+      <button class="btn" onclick="runPlan()">Show traffic</button>
+      <button class="btn" onclick="clearPlan()">Clear</button>
+    </div>
+    <div id="planBox"></div>
+
+    <div class="title">Buses near me
+      <span id="etaAge" style="float:right;color:var(--muted);font-weight:400"></span></div>
+    <div id="etaBox"><div class="none">Press <b>My location</b> to see the stops
+      around you and when the next bus reaches each one.</div></div>
 
     <div class="title">Routes <span id="routeCount" style="float:right;color:var(--muted)"></span></div>
     <div class="tools" style="margin-bottom:8px">
@@ -260,7 +303,9 @@ function updateBuses(fc){
     if (!b){
       const marker = L.circleMarker(ll, {
         renderer, radius:3, color:'#0b1220', weight:1,
-        fillColor:p.color || '#ffffff', fillOpacity:1
+        fillColor:p.color || '#ffffff', fillOpacity:1,
+        // the dot stays small on screen; the click target does not
+        bubblingMouseEvents:false
       });
       ensureGroup(key).bus.addLayer(marker);
       b = { marker, from:ll, to:ll, t0:now, dur:SYNC_MS, key };
@@ -455,6 +500,183 @@ async function toggleOsm(){
   if (osmLayer.bringToBack) osmLayer.bringToBack();
   osmOn = true; btn.classList.add('on');
 }
+/* ─────────────────  TRIP PLANNER  ───────────────── */
+/* The route comes from the router; the colours come only from road we have
+   actually measured. A piece of the trip with no corridor of ours on it, or one
+   with no recent bus, is drawn as a grey dashed line and counted as unknown -
+   it is never given a plausible-looking colour. The panel states the covered
+   share in plain numbers for the same reason. */
+let planLayer = L.layerGroup().addTo(map);
+let ptA = null, ptB = null, pickMode = null, aMark = null, bMark = null;
+
+function armPick(which){
+  pickMode = which;
+  document.getElementById('pickHint').textContent = ' — now click the map';
+}
+
+map.on('click', e => {
+  if (!pickMode) return;
+  setPoint(pickMode, e.latlng.lat, e.latlng.lng,
+           `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`);
+  pickMode = null;
+  document.getElementById('pickHint').textContent = '';
+});
+
+function setPoint(which, lat, lng, label){
+  const mk = L.circleMarker([lat,lng], {radius:7, weight:2, color:'#fff', bubblingMouseEvents:false,
+      fillColor: which==='from' ? '#2ed573' : '#ff4d4d', fillOpacity:1})
+      .bindPopup(which==='from' ? 'From' : 'To');
+  if (which === 'from'){
+    if (aMark) map.removeLayer(aMark);
+    aMark = mk.addTo(map); ptA = [lat,lng];
+    document.getElementById('fromBox').value = label;
+  } else {
+    if (bMark) map.removeLayer(bMark);
+    bMark = mk.addTo(map); ptB = [lat,lng];
+    document.getElementById('toBox').value = label;
+  }
+}
+
+function useMyLocation(){
+  if (myPos){ setPoint('from', myPos[0], myPos[1], 'My location'); return; }
+  document.getElementById('pickHint').textContent = ' — press My location first';
+  setTimeout(()=>{ document.getElementById('pickHint').textContent=''; }, 4000);
+}
+
+async function resolveBox(which){
+  const box = document.getElementById(which === 'from' ? 'fromBox' : 'toBox');
+  const txt = box.value.trim();
+  const pt  = which === 'from' ? ptA : ptB;
+  if (!txt) return null;
+  if (pt && /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(txt)) return pt;
+  if (pt && txt === 'My location') return pt;
+  const r = await fetch('/api/geocode?q=' + encodeURIComponent(txt));
+  const d = await r.json();
+  if (!d.ok || !d.results.length) return {error: d.reason || `nothing found for "${txt}"`};
+  const hit = d.results[0];
+  setPoint(which, hit.lat, hit.lon, hit.name.split(',').slice(0,2).join(','));
+  return [hit.lat, hit.lon];
+}
+
+function clearPlan(){
+  planLayer.clearLayers();
+  document.getElementById('planBox').innerHTML = '';
+}
+
+async function runPlan(){
+  const box = document.getElementById('planBox');
+  box.innerHTML = '<div class="none">working…</div>';
+  const a = await resolveBox('from'), b = await resolveBox('to');
+  if (!a || a.error || !b || b.error){
+    box.innerHTML = `<div class="none">${(a&&a.error) || (b&&b.error) ||
+      'set both From and To'}</div>`;
+    return;
+  }
+  let d;
+  try {
+    const r = await fetch(`/api/plan?from_lat=${a[0]}&from_lon=${a[1]}` +
+                          `&to_lat=${b[0]}&to_lon=${b[1]}`);
+    d = await r.json();
+  } catch (e) { box.innerHTML = '<div class="none">could not reach the server</div>'; return; }
+  if (!d.ok){ box.innerHTML = `<div class="none">${d.reason}</div>`; return; }
+
+  planLayer.clearLayers();
+  const bounds = [];
+  for (const seg of d.segments){
+    const ll = seg.path.map(p => [p[1], p[0]]);
+    ll.forEach(p => bounds.push(p));
+    if (seg.live){
+      L.polyline(ll, {color: seg.color, weight: 7, opacity: 0.95})
+       .bindPopup(`${seg.speed} km/h — measured on ${seg.route}`)
+       .addTo(planLayer);
+    } else {
+      L.polyline(ll, {color: '#7f8c9b', weight: 4, opacity: 0.55,
+                      dashArray: '5,7'})
+       .bindPopup('no live data on this stretch')
+       .addTo(planLayer);
+    }
+  }
+  if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.12));
+
+  const pct = Math.round(d.live_share * 100);
+  const jam = d.jams.map(j =>
+      `<div class="arr"><span class="rt" style="background:#5a1f1f;border-color:#a33">jam</span>
+       <span>${j.len_m < 1000 ? j.len_m + ' m' : (j.len_m/1000).toFixed(1)+' km'}
+       at ${j.speed} km/h</span></div>`).join('') ||
+      '<div class="none">no jam on the measured part</div>';
+  const bus = d.buses_on_path.length
+      ? d.buses_on_path.map(b => `<div class="arr">
+          <span class="rt">${b.route}</span>
+          <span>${b.direction}${b.speed !== null ? ' · ' + b.speed + ' km/h' : ''}</span>
+          <span class="in" style="font-weight:400;color:var(--muted)">${b.age_s}s ago</span>
+        </div>`).join('')
+      : '<div class="none">no tracked bus on this road right now</div>';
+
+  box.innerHTML = `
+    <div class="stop">
+      <h4>${d.distance_km} km by road</h4>
+      <div class="walk">router estimate ${d.router_minutes} min` +
+      (d.measured_minutes !== null
+        ? ` · measured part ${d.measured_minutes} min` : '') + `</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="walk"><b style="color:#e6eefc">${pct}%</b> of this route has live
+        traffic from our buses (${d.covered_km} km). The other
+        ${d.unknown_km} km is drawn grey — we have no data there, so no colour.</div>
+    </div>
+    <div class="stop"><h4>Jams on the measured part</h4>${jam}</div>
+    <div class="stop"><h4>Buses on this road now</h4>${bus}</div>`;
+}
+
+/* ─────────────────  ARRIVALS NEAR ME  ───────────────── */
+/* The backend measures the distance from each live bus to the stop ALONG its
+   own route line and integrates the live speeds on that stretch, so a jam in
+   between pushes the time out. Each arrival carries how much of that stretch
+   was actually measured - live / partial / estimate - and that label is shown
+   as it comes. Nothing is presented as measured when it was guessed. */
+let myPos = null, etaTimer = null;
+
+function fmtEta(sec){
+  if (sec < 45) return 'now';
+  const m = Math.round(sec / 60);
+  return m < 60 ? m + ' min' : Math.floor(m/60) + 'h ' + (m%60) + 'm';
+}
+
+async function refreshEta(){
+  if (!myPos) return;
+  const box = document.getElementById('etaBox');
+  try {
+    const r = await fetch(`/api/eta?lat=${myPos[0]}&lon=${myPos[1]}&radius=800`);
+    const d = await r.json();
+    if (!d.ok){
+      box.innerHTML = `<div class="none">${d.reason || 'no stop data'}</div>`;
+      return;
+    }
+    if (!d.stops.length){
+      box.innerHTML = '<div class="none">No tracked bus stop within 800 m of you.</div>';
+      document.getElementById('etaAge').textContent = '';
+      return;
+    }
+    box.innerHTML = d.stops.map(g => {
+      const rows = g.arrivals.length
+        ? g.arrivals.map(a => `
+            <div class="arr">
+              <span class="rt">${a.route}</span>
+              <span>${a.away_m < 1000 ? a.away_m + ' m' : (a.away_m/1000).toFixed(1) + ' km'}
+                    away${a.speed !== null ? ' · ' + a.speed + ' km/h' : ''}</span>
+              <span class="q ${a.quality}">${a.quality}</span>
+              <span class="in">${fmtEta(a.eta_s)}</span>
+            </div>`).join('')
+        : '<div class="none">no tracked bus on the way</div>';
+      return `<div class="stop"><h4>${g.name}</h4>
+                <div class="walk">${g.walk_m} m from you</div>${rows}</div>`;
+    }).join('');
+    document.getElementById('etaAge').textContent = new Date()
+      .toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  } catch (e) {
+    box.innerHTML = '<div class="none">could not reach the server</div>';
+  }
+}
+
 /* ─────────────────  MY LOCATION  ───────────────── */
 /* The browser asks the person for permission the first time, and only over
    HTTPS - which the Render deployment is. Opening the page over plain http://
@@ -467,6 +689,7 @@ function locateMe(){
   if (meWatch !== null){                      // second click: stop following
     navigator.geolocation.clearWatch(meWatch);
     meWatch = null;
+    if (etaTimer !== null){ clearInterval(etaTimer); etaTimer = null; }
     btn.classList.remove('on');
     btn.textContent = 'My location';
     return;
@@ -487,23 +710,32 @@ function locateMe(){
   meWatch = navigator.geolocation.watchPosition(pos => {
     const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords;
     if (!meMarker){
-      meCircle = L.circle([lat,lng], { radius: acc, color:'#4da3ff', weight:1,
-                                       fillColor:'#4da3ff', fillOpacity:0.12 }).addTo(map);
+      // interactive:false is essential. A filled circle swallows every click
+      // inside it, and on a desktop without GPS the reported accuracy can be
+      // kilometres - which silently made the whole visible map unclickable, so
+      // trails and buses stopped opening their popups.
+      meCircle = L.circle([lat,lng], { radius: Math.min(acc, 1500),
+                                       color:'#4da3ff', weight:1,
+                                       fillColor:'#4da3ff', fillOpacity:0.10,
+                                       interactive:false }).addTo(map);
       meMarker = L.circleMarker([lat,lng], { radius:6, color:'#fff', weight:2,
                                              fillColor:'#4da3ff', fillOpacity:1 }).addTo(map);
     } else {
       meMarker.setLatLng([lat,lng]);
-      meCircle.setLatLng([lat,lng]).setRadius(acc);
+      meCircle.setLatLng([lat,lng]).setRadius(Math.min(acc, 1500));
     }
     meMarker.bindPopup(
       `You are here<br>accuracy ${Math.round(acc)} m<br>` +
       `<a href="https://www.google.com/maps/search/?api=1&query=${lat},${lng}" ` +
       `target="_blank" rel="noopener">Open in Maps</a>`);
+    myPos = [lat, lng];
     if (first){
       map.setView([lat,lng], Math.max(map.getZoom(), 16));
       first = false;
       btn.textContent = 'Following you';
       btn.classList.add('on');
+      refreshEta();
+      if (etaTimer === null) etaTimer = setInterval(refreshEta, 20000);
     }
   }, err => {
     navigator.geolocation.clearWatch(meWatch);

@@ -237,6 +237,7 @@ def load_corridors() -> None:
           f"({points} points, {sum(len(c) for c in built.values())} cells); "
           f"{len(CORRIDOR_LINES)} usable as route lines")
     load_stops()
+    build_road_grid()
 
 
 def load_stops() -> None:
@@ -261,19 +262,27 @@ def load_stops() -> None:
         print(f"[stops] FAILED to read stops: {exc}")
         return
     total = far = 0
+    STOP_INDEX.clear()
+    STOP_CELLS.clear()
     for key, pts in raw.items():
         line = CORRIDOR_LINES.get(key)
         if not line or not isinstance(pts, list):
             continue
         chains = []
-        for p in pts:
+        for i, p in enumerate(pts):
             try:
                 lon, lat = float(p[0]), float(p[1])
             except (TypeError, ValueError, IndexError):
                 continue
+            name = str(p[2]).strip() if len(p) > 2 and p[2] else ""
             off, chain = project_on_line(line, lat, lon)
             if off <= STOP_SNAP_M:
                 chains.append(chain)
+                rec = {"key": key, "n": i + 1, "name": name,
+                       "lat": lat, "lon": lon, "chain": chain}
+                STOP_INDEX.append(rec)
+                STOP_CELLS.setdefault(_stop_cell(lat, lon), []).append(
+                    len(STOP_INDEX) - 1)
             else:
                 far += 1
         if chains:
@@ -355,7 +364,14 @@ BACKWARD_TOL_M = 30.0        # small negative progress is GPS noise, not reversi
 PROJECT_WINDOW_M = 2500.0    # search window around the previous position on the line
 
 CORRIDOR_LINES: Dict[str, dict] = {}
-ROUTE_STOP_CHAINS: Dict[str, List[float]] = {}   # key -> sorted stop chainages   # key -> {"pts": [(lat,lon)], "cum": [metres]}
+ROUTE_STOP_CHAINS: Dict[str, List[float]] = {}   # key -> sorted stop chainages
+STOP_INDEX: List[dict] = []                      # every stop, with name + chainage
+STOP_CELLS: Dict[Tuple[int, int], List[int]] = {}   # ~500 m grid -> STOP_INDEX rows
+STOP_CELL_DEG = 0.0045                           # ~500 m
+
+
+def _stop_cell(lat: float, lon: float) -> Tuple[int, int]:
+    return (int(lat / STOP_CELL_DEG), int(lon / STOP_CELL_DEG))   # key -> {"pts": [(lat,lon)], "cum": [metres]}
 
 
 def _build_line(coords: List[List[float]]) -> Optional[dict]:
@@ -560,6 +576,157 @@ def _hold(state: dict, now: float, prev_seen: float) -> None:
 
     if state.get("speed") is not None:
         state["speed"] = state["speed"] * (1 - SPEED_ALPHA)
+
+
+# --------------------------------------------------------------------------
+# Live speed profile, and arrival times built from it
+# --------------------------------------------------------------------------
+# Every painted hop already knows two things the usual ETA has to guess: where
+# it happened along the route (its chainage) and how fast the bus was there.
+# Keeping those lets an arrival time be integrated over the road AHEAD of the
+# bus at the speed traffic is actually moving on each part of it, instead of
+# multiplying the remaining distance by one average.
+
+SPEED_TTL = _env_float("SPEED_TTL", 1800.0)      # a sample older than this is stale
+SPEED_SAMPLES_PER_ROUTE = 400
+ETA_FALLBACK_KMH = _env_float("ETA_FALLBACK_KMH", 16.0)
+ETA_MIN_KMH = 4.0                                # below this an ETA is meaningless
+ETA_MAX_KMH = 45.0
+ETA_STOP_DWELL_S = _env_float("ETA_STOP_DWELL_S", 20.0)
+ETA_STEP_M = 250.0
+
+SPEED_PROFILE: Dict[str, List[Tuple[float, float, float]]] = {}   # key -> (chain, kmh, ts)
+
+
+def record_speed(key: str, chain: float, kmh: float, ts: float) -> None:
+    buf = SPEED_PROFILE.setdefault(key, [])
+    buf.append((chain, kmh, ts))
+    if len(buf) > SPEED_SAMPLES_PER_ROUTE * 2:
+        cut = ts - SPEED_TTL
+        buf = [b for b in buf if b[2] >= cut][-SPEED_SAMPLES_PER_ROUTE:]
+        SPEED_PROFILE[key] = buf
+
+
+def speed_at(key: str, chain: float, now: float,
+             window_m: float = 400.0) -> Optional[float]:
+    """
+    The speed measured closest to this point of the route, if any is recent.
+
+    Nearness has to come first. Picking merely the freshest sample in a wide
+    window let a jam 700 m back decide the speed of a clear stretch, which made
+    a bus 395 m from its stop look six minutes away. Distance decides; age only
+    breaks a tie, and anything past SPEED_TTL is ignored outright.
+    """
+    buf = SPEED_PROFILE.get(key)
+    if not buf:
+        return None
+    best = None
+    best_score = None
+    for c, kmh, ts in buf:
+        gap = abs(c - chain)
+        if gap > window_m or now - ts > SPEED_TTL:
+            continue
+        score = (round(gap / 50.0), -ts)     # nearest 50 m bucket, then newest
+        if best_score is None or score < best_score:
+            best, best_score = kmh, score
+    return best
+
+
+def eta_seconds(key: str, c_from: float, c_to: float, now: float,
+                bus_kmh: Optional[float] = None) -> Tuple[int, str]:
+    """
+    Seconds for a bus to cover this stretch, and how confident that is.
+
+    The road ahead is walked in ETA_STEP_M pieces. Each piece uses the freshest
+    speed actually measured near it; where nothing has been measured recently
+    the bus's own speed is used, and failing that a plain default. Time standing
+    at the stops in between is added, because a bus does stop at them.
+    """
+    dist = max(0.0, c_to - c_from)
+    if dist <= 0:
+        return 0, "live"
+    live = total = 0.0
+    walked = 0.0
+    while walked < dist:
+        step = min(ETA_STEP_M, dist - walked)
+        kmh = speed_at(key, c_from + walked + step / 2, now)
+        if kmh is not None:
+            live += step
+        else:
+            kmh = bus_kmh if bus_kmh else ETA_FALLBACK_KMH
+        kmh = max(ETA_MIN_KMH, min(ETA_MAX_KMH, kmh))
+        total += (step / 1000.0) / kmh * 3600.0
+        walked += step
+
+    chains = ROUTE_STOP_CHAINS.get(key) or []
+    between = sum(1 for c in chains if c_from < c < c_to)
+    total += between * ETA_STOP_DWELL_S
+
+    share = live / dist if dist else 0.0
+    quality = "live" if share >= 0.6 else ("partial" if share >= 0.2 else "estimate")
+    return int(round(total)), quality
+
+
+# --------------------------------------------------------------------------
+# Traffic lookup by place: "what do we actually know about this bit of road?"
+# --------------------------------------------------------------------------
+# The route corridors are sampled every ROAD_SAMPLE_M into a grid, each sample
+# remembering which route it belongs to and how far along it is. A point on any
+# road can then be answered in one lookup: which of our corridors passes here,
+# and what speed was last measured at that spot. Where no corridor passes, the
+# answer is None - and the caller must say so rather than colour the road.
+
+ROAD_SAMPLE_M = 30.0
+ROAD_MATCH_M = _env_float("ROAD_MATCH_M", 45.0)   # how close counts as "this road"
+ROAD_GRID: Dict[Tuple[int, int], List[Tuple[str, float, float, float]]] = {}
+
+
+def build_road_grid() -> None:
+    """key, chainage, lat, lon for every sample of every corridor."""
+    ROAD_GRID.clear()
+    for key, line in CORRIDOR_LINES.items():
+        pts, cum = line["pts"], line["cum"]
+        total = cum[-1]
+        step = ROAD_SAMPLE_M
+        d = 0.0
+        while d <= total:
+            lat, lon = _point_at(line, d)
+            ROAD_GRID.setdefault(_cell(lat, lon), []).append((key, d, lat, lon))
+            d += step
+    print(f"[roads] traffic lookup grid: {len(ROAD_GRID)} cells, "
+          f"{sum(len(v) for v in ROAD_GRID.values())} samples")
+
+
+def traffic_at(lat: float, lon: float, now: float):
+    """
+    (speed_kmh, route_key, distance_m) for the nearest corridor sample that has
+    a recent speed - or None when no tracked route passes here, or one does but
+    nothing has been measured on it lately. Those two are different, and the
+    caller is told which by the second element being set or not.
+    """
+    ci, cj = _cell(lat, lon)
+    near: Dict[str, Tuple[float, float]] = {}      # key -> (chain, distance)
+    for i in (-1, 0, 1):
+        for j in (-1, 0, 1):
+            for key, chain, slat, slon in ROAD_GRID.get((ci + i, cj + j), ()):
+                d = haversine_km(lon, lat, slon, slat) * 1000.0
+                if d > ROAD_MATCH_M:
+                    continue
+                if key not in near or d < near[key][1]:
+                    near[key] = (chain, d)
+    if not near:
+        return None, None, None
+    # Several routes share a main road, and only some of them have a bus on it
+    # right now. Take the nearest corridor that actually has a recent
+    # measurement; fall back to naming the nearest one with no speed, so the
+    # caller can tell "no route here" apart from "route here, nothing measured".
+    ordered = sorted(near.items(), key=lambda kv: kv[1][1])
+    for key, (chain, d) in ordered:
+        kmh = speed_at(key, chain, now)
+        if kmh is not None:
+            return kmh, key, d
+    key, (chain, d) = ordered[0]
+    return None, key, d
 
 
 def refresh_route_config() -> None:
@@ -1404,6 +1571,8 @@ async def run_cycle(
                     "ts_to": now,
                     "audited": True,     # exact by construction, nothing to audit
                 })
+                record_speed(f"{state.get('route')}|{state.get('direction')}",
+                             lr["chain"], speed, now)
                 _lr_counts["painted"] += 1
                 continue
 
@@ -1665,6 +1834,236 @@ async def get_routes():
             }
         )
     return {"count": len(rows), "routes": rows}
+
+
+@app.get("/api/eta")
+async def get_eta(lat: float, lon: float, radius: int = 700, limit: int = 8,
+                  per_stop: int = 3):
+    """
+    Which buses are coming to the stops near this point, and when.
+
+    Stops within `radius` are collected, then for each one every live bus that is
+    still BEHIND it on the same route line. The distance is measured along the
+    route, and the time to cover it is integrated over the live speeds on that
+    stretch (see eta_seconds), so a jam between the bus and the stop pushes the
+    arrival out instead of being averaged away.
+
+    A bus that has already passed the stop is left out - it is not coming.
+    """
+    now = time.time()
+    if not STOP_INDEX:
+        return {"ok": False, "reason": "no stop data - build data/route_stops.json",
+                "stops": []}
+
+    # live buses, grouped by the route line they are on
+    buses: Dict[str, List[dict]] = {}
+    for bid, st in last_positions.items():
+        if now - st.get("seen", 0) > BUS_STALE_SEC or st.get("chain") is None:
+            continue
+        buses.setdefault(f"{st.get('route')}|{st.get('direction')}", []).append(
+            {"bid": bid, "chain": st["chain"], "kmh": st.get("speed"),
+             "lat": st.get("lat"), "lng": st.get("lng"), "seen": st.get("seen")})
+
+    cell = _stop_cell(lat, lon)
+    span = int(radius / (STOP_CELL_DEG * 111320)) + 1
+    seen_rows = set()
+    near = []
+    for i in range(-span, span + 1):
+        for j in range(-span, span + 1):
+            for idx in STOP_CELLS.get((cell[0] + i, cell[1] + j), ()):
+                if idx in seen_rows:
+                    continue
+                seen_rows.add(idx)
+                rec = STOP_INDEX[idx]
+                d = haversine_km(lon, lat, rec["lon"], rec["lat"]) * 1000.0
+                if d <= radius:
+                    near.append((d, rec))
+    near.sort(key=lambda x: x[0])
+
+    # One physical stop is served by several routes; group by name and place so
+    # the rider sees "Ashram Chowk - 469, 543, OMS", not the same stop repeated.
+    groups: Dict[Tuple, dict] = {}
+    for d, rec in near:
+        gkey = (rec["name"].lower() or f"{round(rec['lat'], 4)},{round(rec['lon'], 4)}",
+                round(rec["lat"], 3), round(rec["lon"], 3))
+        g = groups.setdefault(gkey, {"name": rec["name"] or "Unnamed stop",
+                                     "lat": rec["lat"], "lon": rec["lon"],
+                                     "walk_m": int(d), "arrivals": []})
+        route, direction = rec["key"].split("|", 1)
+        for b in buses.get(rec["key"], []):
+            ahead = rec["chain"] - b["chain"]
+            if ahead < -50 or ahead > 25000:
+                continue                      # already gone, or absurdly far back
+            secs, quality = eta_seconds(rec["key"], b["chain"], rec["chain"],
+                                        now, b["kmh"])
+            g["arrivals"].append({
+                "route": route, "direction": direction, "bus_id": b["bid"],
+                "away_m": int(max(0.0, ahead)), "eta_s": secs, "quality": quality,
+                "speed": round(b["kmh"], 1) if b["kmh"] is not None else None,
+                "lat": b["lat"], "lng": b["lng"],
+                "age_s": int(now - b["seen"]),
+            })
+
+    out = []
+    for g in groups.values():
+        g["arrivals"].sort(key=lambda a: a["eta_s"])
+        g["arrivals"] = g["arrivals"][:per_stop]
+        out.append(g)
+    out.sort(key=lambda g: (not g["arrivals"], g["walk_m"]))
+    return {"ok": True, "now": now, "stops": out[:limit]}
+
+
+PLAN_SEG_M = 120.0          # colour the plan in pieces this long
+PLAN_BUS_M = 60.0           # a bus this close to the plan counts as "on it"
+NOMINATIM = "https://nominatim.openstreetmap.org/search"
+
+
+@app.get("/api/geocode")
+async def geocode(q: str, limit: int = 5):
+    """Place name -> coordinates, via OpenStreetMap's Nominatim, biased to Delhi."""
+    params = {"q": q, "format": "json", "limit": str(limit),
+              "countrycodes": "in", "viewbox": "76.83,28.91,77.42,28.38",
+              "bounded": "1"}
+    headers = {"User-Agent": "delhi-bus-traffic/1.0 (self-hosted dashboard)"}
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(NOMINATIM, params=params, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status != 200:
+                    return {"ok": False, "reason": f"geocoder returned {r.status}",
+                            "results": []}
+                rows = await r.json()
+    except Exception as exc:
+        return {"ok": False, "reason": f"geocoder unreachable ({type(exc).__name__})",
+                "results": []}
+    return {"ok": True, "results": [
+        {"name": x.get("display_name", ""), "lat": float(x["lat"]),
+         "lon": float(x["lon"])} for x in rows]}
+
+
+@app.get("/api/plan")
+async def plan(from_lat: float, from_lon: float, to_lat: float, to_lon: float):
+    """
+    A road route from A to B, coloured with the traffic we have actually measured.
+
+    The route itself comes from OSRM. Then every ~120 m piece of it is asked
+    whether one of our bus corridors passes there and what speed was last seen.
+    A piece with an answer gets a colour; a piece without gets `live: false` and
+    the dashboard draws it grey. The share that is covered is returned, so the
+    plan can never look better informed than it is - most of Delhi's roads carry
+    none of these 58 routes, and on those we know nothing.
+    """
+    now = time.time()
+    url = (f"{OSRM_ROUTE_URL}{from_lon},{from_lat};{to_lon},{to_lat}")
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, params={"overview": "full",
+                                             "geometries": "geojson"},
+                                timeout=aiohttp.ClientTimeout(total=30)) as r:
+                data = await r.json()
+    except Exception as exc:
+        return {"ok": False, "reason": f"router unreachable ({type(exc).__name__})"}
+    if data.get("code") != "Ok" or not data.get("routes"):
+        return {"ok": False, "reason": data.get("code", "no route found")}
+
+    route = data["routes"][0]
+    geom = route["geometry"]["coordinates"]
+    road_km = route.get("distance", 0) / 1000.0
+    osrm_min = route.get("duration", 0) / 60.0
+
+    # walk the route, cutting it into pieces of about PLAN_SEG_M
+    pieces, cur, run = [], [geom[0]], 0.0
+    for a, b in zip(geom, geom[1:]):
+        d = haversine_km(a[0], a[1], b[0], b[1]) * 1000.0
+        cur.append(b)
+        run += d
+        if run >= PLAN_SEG_M:
+            pieces.append((cur, run))
+            cur, run = [b], 0.0
+    if len(cur) > 1:
+        pieces.append((cur, run))
+
+    out = []
+    covered_m = measured_time_s = unknown_m = 0.0
+    jams = []
+    routes_seen: Dict[str, float] = {}
+    for pts, length in pieces:
+        mid = pts[len(pts) // 2]
+        kmh, key, _ = traffic_at(mid[1], mid[0], now)
+        piece = {"path": pts, "len_m": int(length)}
+        if kmh is None:
+            piece["live"] = False
+            piece["route"] = key           # a corridor is here but unmeasured
+            unknown_m += length
+        else:
+            piece["live"] = True
+            piece["speed"] = round(kmh, 1)
+            piece["color"] = color_for_speed(kmh)
+            piece["route"] = key
+            covered_m += length
+            measured_time_s += (length / 1000.0) / max(ETA_MIN_KMH, kmh) * 3600.0
+            routes_seen[key] = routes_seen.get(key, 0.0) + length
+            if kmh < JAM_BELOW_KMH:
+                jams.append({"lat": round(mid[1], 5), "lon": round(mid[0], 5),
+                             "speed": round(kmh, 1), "len_m": int(length)})
+        out.append(piece)
+
+    total_m = covered_m + unknown_m
+    share = covered_m / total_m if total_m else 0.0
+
+    # buses currently sitting on this plan
+    on_plan = []
+    for bid, st in last_positions.items():
+        if now - st.get("seen", 0) > BUS_STALE_SEC:
+            continue
+        blat, blon = st.get("lat"), st.get("lng")
+        if blat is None:
+            continue
+        near = False
+        for pts, _ in pieces:
+            for p in pts:
+                if haversine_km(blon, blat, p[0], p[1]) * 1000.0 <= PLAN_BUS_M:
+                    near = True
+                    break
+            if near:
+                break
+        if near:
+            on_plan.append({"bus_id": bid, "route": st.get("route"),
+                            "direction": st.get("direction"),
+                            "speed": round(st["speed"], 1) if st.get("speed") else None,
+                            "lat": blat, "lng": blon,
+                            "age_s": int(now - st["seen"])})
+    on_plan.sort(key=lambda b: (b["route"] or "", b["bus_id"]))
+
+    # Merge the jam pieces that touch, so one jam is reported once. The gap is
+    # measured from the piece added LAST, not from where the run started -
+    # otherwise a long jam breaks into chunks as soon as it outgrows the window.
+    merged = []
+    prev = None
+    for j in jams:
+        if merged and prev is not None and haversine_km(
+                prev[0], prev[1], j["lon"], j["lat"]) * 1000.0 < PLAN_SEG_M * 2:
+            merged[-1]["len_m"] += j["len_m"]
+            merged[-1]["speed"] = min(merged[-1]["speed"], j["speed"])
+        else:
+            merged.append(dict(j))
+        prev = (j["lon"], j["lat"])
+
+    return {
+        "ok": True,
+        "distance_km": round(road_km, 2),
+        "router_minutes": round(osrm_min, 1),
+        "live_share": round(share, 3),
+        "covered_km": round(covered_m / 1000.0, 2),
+        "unknown_km": round(unknown_m / 1000.0, 2),
+        "measured_minutes": round(measured_time_s / 60.0, 1) if covered_m else None,
+        "jams": sorted(merged, key=lambda j: -j["len_m"])[:6],
+        "routes_on_path": sorted(
+            ({"route": k, "km": round(v / 1000.0, 2)} for k, v in routes_seen.items()),
+            key=lambda x: -x["km"])[:10],
+        "buses_on_path": on_plan,
+        "segments": out,
+    }
 
 
 @app.post("/api/reload_routes")
