@@ -354,6 +354,38 @@ def corridor_ok(key: str, path: List[List[float]]) -> bool:
 # straight-line estimate.
 
 MAX_OFFROUTE_M = _env_float("MAX_OFFROUTE_M", 150.0)
+
+# --------------------------------------------------------------------------
+# Off-route log
+# --------------------------------------------------------------------------
+# A fix further than MAX_OFFROUTE_M from its route line paints nothing - the
+# right call, because guessing would put colour on a road the bus may not be
+# on. But saying nothing hides the gap: the map then looks like no bus went
+# that way, when in truth one did and we could not place it.
+#
+# Two very different things produce that, and they need opposite responses:
+#   * a genuine diversion (roadworks, VIP movement, a driver's shortcut) -
+#     one or two buses, once. Nothing to fix; the gap is the honest answer.
+#   * our line being wrong - most buses of that route leaving it at the same
+#     place, every day. Then the bus is right and the corridor needs repair.
+# The aggregate counter cannot tell them apart, so each off-route fix is kept
+# with its route and position and /api/debug/offroute groups them by place.
+OFFROUTE_LOG: List[dict] = []
+OFFROUTE_MAX = _env_int("OFFROUTE_MAX", 4000)
+OFFROUTE_TTL = _env_float("OFFROUTE_TTL", 21600.0)   # 6 h of evidence
+
+
+def record_offroute(state: dict, bid: str, lat: float, lon: float,
+                    off_m: float, now: float) -> None:
+    OFFROUTE_LOG.append({
+        "route": state.get("route", "?"), "direction": state.get("direction", ""),
+        "bus_id": bid, "lat": round(lat, 5), "lon": round(lon, 5),
+        "off_m": round(off_m), "ts": now,
+    })
+    if len(OFFROUTE_LOG) > OFFROUTE_MAX * 2:
+        cut = now - OFFROUTE_TTL
+        keep = [r for r in OFFROUTE_LOG if r["ts"] >= cut][-OFFROUTE_MAX:]
+        OFFROUTE_LOG[:] = keep
 STOP_RADIUS_M = _env_float("STOP_RADIUS_M", 60.0)     # dwell zone around a stop
 DWELL_GRACE_SEC = _env_float("DWELL_GRACE_SEC", 45.0) # plausible boarding time; past
                                                       # this a stop is genuinely jammed
@@ -1529,6 +1561,10 @@ async def run_cycle(
                                  dwell=0.0)
                     if status == "offroute":
                         state["chain"] = None
+                        state["off_m"] = lr.get("off_m")
+                        state["off_since"] = state.get("off_since") or now
+                        record_offroute(state, bid, lat, lng,
+                                        lr.get("off_m") or 0.0, now)
                     continue
 
                 if status == "stationary":
@@ -1553,7 +1589,8 @@ async def run_cycle(
                     SPEED_ALPHA * raw_speed + (1 - SPEED_ALPHA) * prev)
                 state["speed"] = speed
                 state.update(chain=lr["chain"], anchor_lat=lat, anchor_lng=lng,
-                             anchor_ts=now, bearing=hop_bearing, dwell=0.0)
+                             anchor_ts=now, bearing=hop_bearing, dwell=0.0,
+                             off_m=None, off_since=None)
 
                 active_segments.append({
                     "seq": _next_seq(),
@@ -1788,6 +1825,12 @@ async def get_traffic_segments(after: int = Query(0, ge=0)):
                 "color": color_for_speed(st["speed"]) if st.get("speed") is not None else "#8fa6c4",
                 "bearing": st.get("bearing"),
                 "age": round(now - st["seen"], 1),
+                # visible honesty: this bus is moving but nothing is being
+                # painted for it, and the dashboard says so rather than
+                # leaving the road looking empty
+                "offroute": st.get("off_m") is not None,
+                "off_m": round(st["off_m"]) if st.get("off_m") else None,
+                "off_for_s": round(now - st["off_since"]) if st.get("off_since") else None,
             },
             "geometry": {
                 "type": "Point",
@@ -2215,6 +2258,76 @@ async def debug_drops():
     }
 
 
+@app.get("/api/debug/offroute")
+async def debug_offroute(hours: float = 6.0, min_buses: int = 1,
+                         cell_m: float = 200.0, limit: int = 40):
+    """
+    Where buses leave their own route line, grouped by place.
+
+    The number that decides what to do is `buses` - how many DIFFERENT buses of
+    that route left the line at this spot:
+
+      1-2 buses, few fixes   a real diversion. Nothing to fix; the missing
+                             trail there is the honest answer.
+      many buses, repeatedly the published line is wrong at that place. Run
+                             tools/repair_corridors.py, or rebuild that route's
+                             corridor.
+
+    `share` puts it in proportion: off-route fixes here against all the fixes
+    that route painted in the same window. A route with 200 buses having 10
+    off-route fixes is fine; one with 12 buses having 40 is not.
+    """
+    now = time.time()
+    cut = now - hours * 3600.0
+    rows = [r for r in OFFROUTE_LOG if r["ts"] >= cut]
+    if not rows:
+        return {"ok": True, "window_hours": hours, "fixes": 0, "places": [],
+                "note": "no bus has left its route line in this window"}
+
+    deg = cell_m / 111320.0
+    groups: Dict[Tuple, dict] = {}
+    for r in rows:
+        key = (r["route"], r["direction"],
+               round(r["lat"] / deg), round(r["lon"] / deg))
+        g = groups.setdefault(key, {
+            "route": r["route"], "direction": r["direction"],
+            "lat": r["lat"], "lon": r["lon"], "fixes": 0, "buses": set(),
+            "off_sum": 0.0, "off_max": 0.0, "first": r["ts"], "last": r["ts"]})
+        g["fixes"] += 1
+        g["buses"].add(r["bus_id"])
+        g["off_sum"] += r["off_m"]
+        g["off_max"] = max(g["off_max"], r["off_m"])
+        g["first"] = min(g["first"], r["ts"])
+        g["last"] = max(g["last"], r["ts"])
+
+    per_route: Dict[str, int] = {}
+    for r in rows:
+        k = f"{r['route']}|{r['direction']}"
+        per_route[k] = per_route.get(k, 0) + 1
+
+    out = []
+    for g in groups.values():
+        if len(g["buses"]) < min_buses:
+            continue
+        key = f"{g['route']}|{g['direction']}"
+        out.append({
+            "route": g["route"], "direction": g["direction"],
+            "lat": g["lat"], "lon": g["lon"],
+            "map": f"https://www.openstreetmap.org/#map=18/{g['lat']}/{g['lon']}",
+            "fixes": g["fixes"], "buses": len(g["buses"]),
+            "avg_off_m": round(g["off_sum"] / g["fixes"]),
+            "max_off_m": round(g["off_max"]),
+            "minutes_spanned": round((g["last"] - g["first"]) / 60.0, 1),
+            "share_of_route_offroute": round(g["fixes"] / per_route[key], 2),
+            "verdict": ("line is probably wrong here"
+                        if len(g["buses"]) >= 5 and g["fixes"] >= 15
+                        else "looks like a diversion"),
+        })
+    out.sort(key=lambda x: (-x["buses"], -x["fixes"]))
+    return {"ok": True, "window_hours": hours, "fixes": len(rows),
+            "places": out[:limit]}
+
+
 @app.get("/api/health")
 async def health():
     return {
@@ -2224,13 +2337,6 @@ async def health():
         "audit": AUDIT_STATS,
         "buses": len(last_positions),
         "segments": len(active_segments),
-        # The caps that are ACTUALLY in force, so a value set in the hosting
-        # dashboard can be told apart from the one in render.yaml. Those two
-        # disagreeing is invisible otherwise, and it silently decides how much
-        # painted road survives.
-        "max_segments": MAX_SEGMENTS,
-        "segment_ttl_s": SEGMENT_TTL,
-        "poll_interval_s": POLL_INTERVAL,
         **_cycle_stats,
     }
 
