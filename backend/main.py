@@ -444,7 +444,7 @@ def project_on_line(line: dict, lat: float, lon: float,
     my = 110540.0
     px, py = lon * mx, lat * my
 
-    best_d, best_c = float("inf"), 0.0
+    best_d, best_c = 99999.0, 0.0
     for i in range(lo, hi):
         (alat, alon) = pts[i]
         (blat, blon) = pts[i + 1]
@@ -1838,8 +1838,8 @@ async def get_traffic_segments(after: int = Query(0, ge=0)):
                 # visible honesty: this bus is moving but nothing is being
                 # painted for it, and the dashboard says so rather than
                 # leaving the road looking empty
-                "offroute": st.get("off_m") is not None,
-                "off_m": round(st["off_m"]) if st.get("off_m") else None,
+                "offroute": st.get("off_m") is not None and st["off_m"] != float("inf"),
+                "off_m": round(st["off_m"]) if (st.get("off_m") is not None and st["off_m"] != float("inf")) else None,
                 "off_for_s": round(now - st["off_since"]) if st.get("off_since") else None,
             },
             "geometry": {
