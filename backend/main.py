@@ -1668,7 +1668,7 @@ async def run_cycle(
                 "ts": now,
                 "ts_from": p["hop"][0][2],
                 "ts_to": p["hop"][1][2],
-                "audited": False,
+                "audited": not bool(p.get("ckey")),
             }
         )
         added += 1
