@@ -1018,11 +1018,10 @@ def _path_ok(path, chord_m, leg_m, a, b, ckey: str = "") -> bool:
     if ckey and not corridor_ok(ckey, path):
         return False
     
-    # If this is a deliberate diversion (ckey bypassed), allow much looser shapes
-    # because diversions naturally involve detours and going around blocks.
+    # If this is a deliberate diversion (ckey bypassed), allow OSRM to do its job
+    # without strict geometric rejection. Detours and loops are natural on diversions,
+    # and we want to draw whatever OSRM finds rather than leaving a gap.
     if not ckey:
-        if chord_m > 25 and leg_m > chord_m * 5.0:
-            return False
         return True
 
     ratio_cap = MAX_LEG_RATIO_SHORT if chord_m < SHORT_HOP_M else MAX_LEG_RATIO_LONG
@@ -1094,7 +1093,10 @@ async def match_to_road(
         # Painting the chord is only honest if the chord itself lies on the
         # route. A bus whose fixes have drifted off its corridor gets nothing.
         on_corridor = corridor_ok(ckey, chord) if ckey else False
-        if chord_m <= MAX_CHORD_DRAW_M and on_corridor:
+        
+        # Allow very short micro-chords (<50m) to bridge tiny gaps where OSRM fails,
+        # otherwise only allow if it's strictly on the verified corridor.
+        if chord_m <= 50.0 or (chord_m <= MAX_CHORD_DRAW_M and on_corridor):
             return chord, bearing, False
         reason = "long_chord" if chord_m > MAX_CHORD_DRAW_M else "corridor"
         _drop_counts[reason] += 1
