@@ -1017,6 +1017,14 @@ def _path_ok(path, chord_m, leg_m, a, b, ckey: str = "") -> bool:
         return False
     if ckey and not corridor_ok(ckey, path):
         return False
+    
+    # If this is a deliberate diversion (ckey bypassed), allow much looser shapes
+    # because diversions naturally involve detours and going around blocks.
+    if not ckey:
+        if chord_m > 25 and leg_m > chord_m * 5.0:
+            return False
+        return True
+
     ratio_cap = MAX_LEG_RATIO_SHORT if chord_m < SHORT_HOP_M else MAX_LEG_RATIO_LONG
     if chord_m > 25 and leg_m > chord_m * ratio_cap:
         return False
