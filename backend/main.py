@@ -1085,7 +1085,7 @@ async def match_to_road(
     def _give_up() -> Tuple[List[List[float]], Optional[int], bool]:
         # Painting the chord is only honest if the chord itself lies on the
         # route. A bus whose fixes have drifted off its corridor gets nothing.
-        on_corridor = (not ckey) or corridor_ok(ckey, chord)
+        on_corridor = corridor_ok(ckey, chord) if ckey else False
         if chord_m <= MAX_CHORD_DRAW_M and on_corridor:
             return chord, bearing, False
         reason = "long_chord" if chord_m > MAX_CHORD_DRAW_M else "corridor"
@@ -1134,7 +1134,7 @@ async def match_to_road(
     if matched:
         return matched, bearing, True
 
-    if chord_m > LONG_HOP_M:
+    if chord_m > LONG_HOP_M or not ckey:
         routed = await route_hop(session, sem, lat1, lon1, lat2, lon2, chord_m, ckey)
         if routed:
             return routed, bearing, True
