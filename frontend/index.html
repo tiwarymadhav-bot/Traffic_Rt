@@ -155,8 +155,15 @@
     </div>
     <div id="planBox"></div>
 
-    <div class="title">Buses near me
-      <span id="etaAge" style="float:right;color:var(--muted);font-weight:400"></span></div>
+    <div class="title" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>Buses near me</span>
+      <input type="text" id="routeFilter" placeholder="Search route..." 
+             style="background:#222; border:1px solid #444; color:#fff; border-radius:3px; padding:2px 6px; width:100px; font-size:11px;"
+             oninput="refreshEtaDebounced()">
+    </div>
+    <div style="text-align:right; margin-bottom:5px;">
+      <span id="etaAge" style="color:var(--muted);font-weight:400;font-size:11px;"></span>
+    </div>
     <div id="etaBox"><div class="none">Press <b>My location</b> to see the stops
       around you and when the next bus reaches each one.</div></div>
 
@@ -726,18 +733,30 @@ function fmtEta(sec){
   return m < 60 ? m + ' min' : Math.floor(m/60) + 'h ' + (m%60) + 'm';
 }
 
+let etaDebounce = null;
+function refreshEtaDebounced() {
+  clearTimeout(etaDebounce);
+  etaDebounce = setTimeout(refreshEta, 500);
+}
+
 async function refreshEta(){
   if (!myPos) return;
   const box = document.getElementById('etaBox');
+  const routeQ = document.getElementById('routeFilter').value.trim();
+  const routeParam = routeQ ? `&route=${encodeURIComponent(routeQ)}` : '';
   try {
-    const r = await fetch(`/api/eta?lat=${myPos[0]}&lon=${myPos[1]}&radius=800`);
+    const r = await fetch(`/api/eta?lat=${myPos[0]}&lon=${myPos[1]}&radius=800${routeParam}`);
     const d = await r.json();
     if (!d.ok){
       box.innerHTML = `<div class="none">${d.reason || 'no stop data'}</div>`;
       return;
     }
     if (!d.stops.length){
-      box.innerHTML = '<div class="none">No tracked bus stop within 800 m of you.</div>';
+      if (routeQ) {
+        box.innerHTML = `<div class="none">No active buses found for route <b>${routeQ}</b> coming towards your nearest stops.</div>`;
+      } else {
+        box.innerHTML = '<div class="none">No tracked bus stop within 800 m of you.</div>';
+      }
       document.getElementById('etaAge').textContent = '';
       return;
     }

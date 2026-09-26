@@ -1929,7 +1929,7 @@ async def get_routes():
 
 @app.get("/api/eta")
 async def get_eta(lat: float, lon: float, radius: int = 700, limit: int = 8,
-                  per_stop: int = 3):
+                  per_stop: int = 3, route: str = None):
     """
     Which buses are coming to the stops near this point, and when.
 
@@ -1955,20 +1955,30 @@ async def get_eta(lat: float, lon: float, radius: int = 700, limit: int = 8,
             {"bid": bid, "chain": st["chain"], "kmh": st.get("speed"),
              "lat": st.get("lat"), "lng": st.get("lng"), "seen": st.get("seen")})
 
-    cell = _stop_cell(lat, lon)
-    span = int(radius / (STOP_CELL_DEG * 111320)) + 1
-    seen_rows = set()
     near = []
-    for i in range(-span, span + 1):
-        for j in range(-span, span + 1):
-            for idx in STOP_CELLS.get((cell[0] + i, cell[1] + j), ()):
-                if idx in seen_rows:
-                    continue
-                seen_rows.add(idx)
-                rec = STOP_INDEX[idx]
-                d = haversine_km(lon, lat, rec["lon"], rec["lat"]) * 1000.0
-                if d <= radius:
-                    near.append((d, rec))
+    if route:
+        route_up = route.strip().upper()
+        for rec in STOP_INDEX:
+            r, d = rec["key"].split("|", 1)
+            if r.upper() == route_up:
+                dist = haversine_km(lon, lat, rec["lon"], rec["lat"]) * 1000.0
+                near.append((dist, rec))
+        per_stop = 10  # show more buses when explicitly searching
+        limit = 3      # but group under fewer stop locations
+    else:
+        cell = _stop_cell(lat, lon)
+        span = int(radius / (STOP_CELL_DEG * 111320)) + 1
+        seen_rows = set()
+        for i in range(-span, span + 1):
+            for j in range(-span, span + 1):
+                for idx in STOP_CELLS.get((cell[0] + i, cell[1] + j), ()):
+                    if idx in seen_rows:
+                        continue
+                    seen_rows.add(idx)
+                    rec = STOP_INDEX[idx]
+                    d = haversine_km(lon, lat, rec["lon"], rec["lat"]) * 1000.0
+                    if d <= radius:
+                        near.append((d, rec))
     near.sort(key=lambda x: x[0])
 
     # One physical stop is served by several routes; group by name and place so
