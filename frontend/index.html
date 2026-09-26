@@ -213,6 +213,14 @@ let routeMeta   = new Map();   // "route|dir" -> {route, direction, from, to}
 let motion = true, fade = false, lastSync = 0, animHandle = null;
 let osmLayer = null, osmOn = false, resetOpacity = false;
 
+window.focusBus = function(bid) {
+  const b = buses.get(bid);
+  if (b && b.marker) {
+    map.flyTo(b.marker.getLatLng(), 15, {duration: 0.8});
+    setTimeout(() => b.marker.openPopup(), 800);
+  }
+};
+
 /* ──────────────────────  ROUTE GROUP HELPERS  ─────────────────── */
 function keyOf(route, dir){ return route + '|' + (dir||''); }
 
@@ -682,7 +690,7 @@ async function runPlan(){
        at ${j.speed} km/h</span></div>`).join('') ||
       '<div class="none">no jam on the measured part</div>';
   const bus = d.buses_on_path.length
-      ? d.buses_on_path.map(b => `<div class="arr" onclick="focusBus('${a.bus_id}')" style="cursor:pointer;" title="Click to locate on map">
+      ? d.buses_on_path.map(b => `<div class="arr" onclick="focusBus('${b.bus_id}')" style="cursor:pointer;" title="Click to locate on map">
           <span class="rt">${b.route}</span>
           <span>${b.direction}${b.speed !== null ? ' · ' + b.speed + ' km/h' : ''}</span>
           <span class="in" style="font-weight:400;color:var(--muted)">${b.age_s}s ago</span>
