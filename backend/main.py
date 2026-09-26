@@ -97,7 +97,7 @@ COORD_DP = 5                # ~1.1 m precision, big payload saving
 # ---- map matching --------------------------------------------------------
 MATCH_WINDOW = 5            # how many recent fixes feed the HMM matcher
 MATCH_WINDOW_SEC = 240      # ignore fixes older than this in the window
-MATCH_RADIUS_M = 30         # GPS uncertainty handed to OSRM per fix
+MATCH_RADIUS_M = 100        # GPS uncertainty handed to OSRM per fix
 MIN_CONFIDENCE = 0.01       # OSRM reports low confidence on curves, so keep this loose
 MAX_LEG_RATIO_SHORT = 1.8   # short hop: a detour around the block is obvious
 MAX_LEG_RATIO_LONG = 2.5    # long hop: flyovers and loops legitimately add distance
