@@ -1551,8 +1551,8 @@ async def run_cycle(
                     _hold(state, now, prev_seen)
                     continue
 
-            if dist_km > MAX_JUMP_KM or dt <= 0:
-                # real teleport: start a fresh track, do not paint across Delhi
+            if dist_km > MAX_JUMP_KM or dt <= 0 or (now - prev_seen) > 180:
+                # real teleport or offline gap: start a fresh track, do not paint stale red trails
                 state.update(anchor_lat=lat, anchor_lng=lng, anchor_ts=now,
                              history=[(lat, lng, now)], recent=[(lat, lng, now)],
                              track=[(lat, lng, now)], chain=None, dwell=0.0)
