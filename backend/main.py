@@ -828,15 +828,15 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> int
 def color_for_speed(speed_kmh: float, limit_kmh: float = 40.0) -> str:
     """
     Dynamic coloring based on the road's speed limit (Relative Traffic Coloring).
-    < 20% of limit -> Jam (Red)
-    20% - 50% of limit -> Moderate (Orange)
-    > 50% of limit -> Fast (Green)
+    < 10% of limit -> Jam (Red)
+    10% - 40% of limit -> Moderate (Orange)
+    > 40% of limit -> Fast (Green)
     """
     ratio = speed_kmh / limit_kmh if limit_kmh > 0 else 1.0
     
-    if ratio < 0.20:
+    if ratio < 0.10:
         return "#ff4d4d"      # heavy jam
-    if ratio <= 0.50:
+    if ratio <= 0.40:
         return "#ffa502"      # moderate
     return "#2ed573"          # fast / free flow
 
