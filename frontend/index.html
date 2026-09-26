@@ -682,7 +682,7 @@ async function runPlan(){
        at ${j.speed} km/h</span></div>`).join('') ||
       '<div class="none">no jam on the measured part</div>';
   const bus = d.buses_on_path.length
-      ? d.buses_on_path.map(b => `<div class="arr">
+      ? d.buses_on_path.map(b => `<div class="arr" onclick="focusBus('${a.bus_id}')" style="cursor:pointer;" title="Click to locate on map">
           <span class="rt">${b.route}</span>
           <span>${b.direction}${b.speed !== null ? ' · ' + b.speed + ' km/h' : ''}</span>
           <span class="in" style="font-weight:400;color:var(--muted)">${b.age_s}s ago</span>
@@ -739,7 +739,7 @@ async function refreshEta(){
               const meta = routeMeta.get(a.route + '|' + a.direction);
               const dirLabel = meta && meta.to ? `<span style="display:block;font-size:9.5px;color:#a0a0a0;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:145px;" title="${meta.to}">to ${meta.to}</span>` : '';
               return `
-              <div class="arr">
+              <div class="arr" onclick="focusBus('${a.bus_id}')" style="cursor:pointer;" title="Click to locate on map">
                 <span class="rt" title="${a.direction}">${a.route}</span>
                 <div style="display:flex; flex-direction:column; justify-content:center;">
                   ${dirLabel}
