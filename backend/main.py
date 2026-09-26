@@ -1039,17 +1039,20 @@ def _path_ok(path, chord_m, leg_m, a, b, ckey: str = "") -> bool:
     if ckey and not corridor_ok(ckey, path):
         return False
     
-    # If this is a deliberate diversion (ckey bypassed), allow OSRM to do its job
-    # without strict geometric rejection. Detours and loops are natural on diversions,
-    # and we want to draw whatever OSRM finds rather than leaving a gap.
-    if not ckey:
-        return True
-
+    # Even if this is a deliberate diversion (ckey bypassed), we MUST enforce
+    # geometric sanity checks! Otherwise a 10m drift off the expressway
+    # causes OSRM to route a 5km U-turn, which gets painted as a massive red jam.
+    
     ratio_cap = MAX_LEG_RATIO_SHORT if chord_m < SHORT_HOP_M else MAX_LEG_RATIO_LONG
+    # Relax ratio slightly for diversions, but a 5km route for a 10m chord is always wrong.
+    if not ckey:
+        ratio_cap *= 2.0
+        
     if chord_m > 25 and leg_m > chord_m * ratio_cap:
         return False
+        
     cross_cap = min(
-        CROSS_TRACK_CEILING,
+        CROSS_TRACK_CEILING * (2.0 if not ckey else 1.0),
         max(MAX_CROSS_TRACK_M, chord_m * CROSS_TRACK_FRACTION),
     )
     return max_cross_track_m(path, a, b) <= cross_cap
