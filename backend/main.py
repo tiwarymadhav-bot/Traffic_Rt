@@ -825,15 +825,18 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> int
     return int((degrees(atan2(x, y)) + 360) % 360)
 
 
-JAM_BELOW_KMH = _env_float("JAM_BELOW_KMH", 8.0)
-FAST_ABOVE_KMH = _env_float("FAST_ABOVE_KMH", 20.0)
-
-
-def color_for_speed(speed_kmh: float) -> str:
-    """Three modes only: heavy jam / moderate / fast."""
-    if speed_kmh < JAM_BELOW_KMH:
+def color_for_speed(speed_kmh: float, limit_kmh: float = 40.0) -> str:
+    """
+    Dynamic coloring based on the road's speed limit (Relative Traffic Coloring).
+    < 20% of limit -> Jam (Red)
+    20% - 50% of limit -> Moderate (Orange)
+    > 50% of limit -> Fast (Green)
+    """
+    ratio = speed_kmh / limit_kmh if limit_kmh > 0 else 1.0
+    
+    if ratio < 0.20:
         return "#ff4d4d"      # heavy jam
-    if speed_kmh <= FAST_ABOVE_KMH:
+    if ratio <= 0.50:
         return "#ffa502"      # moderate
     return "#2ed573"          # fast / free flow
 
@@ -1039,7 +1042,7 @@ async def route_hop(
     sem: asyncio.Semaphore,
     lat1: float, lon1: float, lat2: float, lon2: float, chord_m: float,
     ckey: str = "",
-) -> List[List[float]]:
+) -> Tuple[List[List[float]], float]:
     """Plain A->B routing. Only used for long hops, where it is reliable."""
     url = (
         f"{OSRM_ROUTE_URL}{lon1},{lat1};{lon2},{lat2}"
@@ -1049,19 +1052,22 @@ async def route_hop(
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status != 200:
-                    return []
+                    return [], 40.0
                 data = await resp.json(content_type=None)
                 if data.get("code") != "Ok" or not data.get("routes"):
-                    return []
+                    return [], 40.0
                 r = data["routes"][0]
                 path = r["geometry"]["coordinates"]
-                if _path_ok(path, chord_m, r.get("distance", 0.0), (lat1, lon1), (lat2, lon2), ckey):
-                    return path
+                leg_m = r.get("distance", 0.0)
+                leg_s = r.get("duration", 0.0)
+                free_flow = (leg_m / leg_s * 3.6) if leg_s > 0 else 40.0
+                if _path_ok(path, chord_m, leg_m, (lat1, lon1), (lat2, lon2), ckey):
+                    return path, free_flow
         except asyncio.TimeoutError:
             pass
         except Exception:
             pass
-    return []
+    return [], 40.0
 
 
 async def match_to_road(
@@ -1069,7 +1075,7 @@ async def match_to_road(
     sem: asyncio.Semaphore,
     history: List[Tuple[float, float, float]],
     ckey: str = "",
-) -> Tuple[List[List[float]], Optional[int], bool]:
+) -> Tuple[List[List[float]], Optional[int], bool, float]:
     """
     Snap the newest hop of a bus onto the road network.
 
@@ -1089,7 +1095,7 @@ async def match_to_road(
     chord = [[lon1, lat1], [lon2, lat2]]
     chord_m = haversine_km(lon1, lat1, lon2, lat2) * 1000.0
 
-    def _give_up() -> Tuple[List[List[float]], Optional[int], bool]:
+    def _give_up() -> Tuple[List[List[float]], Optional[int], bool, float]:
         # Painting the chord is only honest if the chord itself lies on the
         # route. A bus whose fixes have drifted off its corridor gets nothing.
         on_corridor = corridor_ok(ckey, chord) if ckey else False
@@ -1097,7 +1103,7 @@ async def match_to_road(
         # Allow very short micro-chords (<50m) to bridge tiny gaps where OSRM fails,
         # otherwise only allow if it's strictly on the verified corridor.
         if chord_m <= 50.0 or (chord_m <= MAX_CHORD_DRAW_M and on_corridor):
-            return chord, bearing, False
+            return chord, bearing, False, 40.0
         reason = "long_chord" if chord_m > MAX_CHORD_DRAW_M else "corridor"
         _drop_counts[reason] += 1
         DROP_SAMPLES.append({
@@ -1107,7 +1113,7 @@ async def match_to_road(
             "ts": round(time.time()),
         })
         del DROP_SAMPLES[:-40]
-        return [], bearing, False
+        return [], bearing, False, 40.0
 
     coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon, _ in history)
     radiuses = ";".join([str(MATCH_RADIUS_M)] * len(history))
@@ -1119,6 +1125,7 @@ async def match_to_road(
     )
 
     matched: List[List[float]] = []
+    matched_limit: float = 40.0
     async with sem:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
@@ -1134,20 +1141,23 @@ async def match_to_road(
                             if (matching.get("confidence") or 0) >= MIN_CONFIDENCE:
                                 path = _leg_geometry(matching, wi - 1)
                                 leg_m = (matching.get("legs") or [{}])[wi - 1].get("distance", 0.0)
+                                leg_s = (matching.get("legs") or [{}])[wi - 1].get("duration", 0.0)
+                                free_flow = (leg_m / leg_s * 3.6) if leg_s > 0 else 40.0
                                 if _path_ok(path, chord_m, leg_m, a, b, ckey):
                                     matched = path
+                                    matched_limit = free_flow
         except asyncio.TimeoutError:
             pass
         except Exception:
             pass
 
     if matched:
-        return matched, bearing, True
+        return matched, bearing, True, matched_limit
 
     if chord_m > LONG_HOP_M or not ckey:
-        routed = await route_hop(session, sem, lat1, lon1, lat2, lon2, chord_m, ckey)
+        routed, routed_limit = await route_hop(session, sem, lat1, lon1, lat2, lon2, chord_m, ckey)
         if routed:
-            return routed, bearing, True
+            return routed, bearing, True, routed_limit
 
     return _give_up()
 
@@ -1658,7 +1668,7 @@ async def run_cycle(
         )
 
     added = dropped = 0
-    for p, (path, bearing, was_snapped) in zip(pending, snapped):
+    for p, (path, bearing, was_snapped, limit_kmh) in zip(pending, snapped):
         if bearing is not None:
             p["state"]["bearing"] = bearing
         if not path or len(path) < 2:
@@ -1672,7 +1682,7 @@ async def run_cycle(
                 "route": st.get("route", "?"),
                 "direction": st.get("direction", ""),
                 "path": decimate(path),
-                "color": color_for_speed(p["speed"]),
+                "color": color_for_speed(p["speed"], limit_kmh),
                 "speed": round(p["speed"], 1),
                 "snapped": was_snapped,
                 "ts": now,
