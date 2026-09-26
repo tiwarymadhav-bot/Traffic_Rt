@@ -2107,7 +2107,7 @@ async def plan(from_lat: float, from_lon: float, to_lat: float, to_lon: float):
             covered_m += length
             measured_time_s += (length / 1000.0) / max(ETA_MIN_KMH, kmh) * 3600.0
             routes_seen[key] = routes_seen.get(key, 0.0) + length
-            if kmh < JAM_BELOW_KMH:
+            if kmh < 4.0:
                 jams.append({"lat": round(mid[1], 5), "lon": round(mid[0], 5),
                              "speed": round(kmh, 1), "len_m": int(length)})
         out.append(piece)
