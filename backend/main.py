@@ -670,13 +670,30 @@ def eta_seconds(key: str, c_from: float, c_to: float, now: float,
     Seconds for a bus to cover this stretch, and how confident that is.
 
     The road ahead is walked in ETA_STEP_M pieces. Each piece uses the freshest
-    speed actually measured near it; where nothing has been measured recently
-    the bus's own speed is used, and failing that a plain default. Time standing
-    at the stops in between is added, because a bus does stop at them.
+    speed actually measured near it. Where nothing has been measured recently,
+    instead of using the bus's noisy instantaneous speed (which spikes at red lights),
+    it assumes the unpainted gaps flow at the same average speed as the painted
+    sections ahead of it (or a city default if nothing is painted).
     """
     dist = max(0.0, c_to - c_from)
     if dist <= 0:
         return 0, "live"
+
+    # Pass 1: find average speed of painted sections ahead
+    painted_sum = 0.0
+    painted_count = 0
+    walked = 0.0
+    while walked < dist:
+        step = min(ETA_STEP_M, dist - walked)
+        kmh = speed_at(key, c_from + walked + step / 2, now)
+        if kmh is not None:
+            painted_sum += kmh
+            painted_count += 1
+        walked += step
+        
+    avg_painted_kmh = (painted_sum / painted_count) if painted_count > 0 else ETA_FALLBACK_KMH
+
+    # Pass 2: calculate ETA
     live = total = 0.0
     walked = 0.0
     while walked < dist:
@@ -685,7 +702,8 @@ def eta_seconds(key: str, c_from: float, c_to: float, now: float,
         if kmh is not None:
             live += step
         else:
-            kmh = bus_kmh if bus_kmh else ETA_FALLBACK_KMH
+            kmh = avg_painted_kmh
+            
         kmh = max(ETA_MIN_KMH, min(ETA_MAX_KMH, kmh))
         total += (step / 1000.0) / kmh * 3600.0
         walked += step
